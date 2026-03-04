@@ -1,0 +1,316 @@
+---
+title: Build outputs
+description: Understanding the Vercel build output structure and how the adapter generates deployable artifacts
+---
+
+The Next.js Vercel Adapter transforms your Next.js build into Vercel's Build Output API v3 format. This page explains the output structure, file organization, and how different types of pages and routes are handled.
+
+## Output directory structure
+
+The adapter creates a `.next/output` directory containing all deployable artifacts:
+
+```bash
+.next/
+└── output/
+    ├── config.json           # Vercel configuration
+    ├── static/               # Static files and assets
+    └── functions/            # Serverless and edge functions
+        ├── index.func/       # Function directories
+        ├── api/hello.func/
+        └── *.prerender-config.json
+```
+
+### Configuration file
+
+The `config.json` file (located at `.next/output/config.json`) contains the complete routing configuration:
+
+<CodeGroup>
+```json config.json structure
+{
+  "version": 3,
+  "routes": [...],
+  "images": {...},
+  "wildcard": [...],
+  "overrides": {...}
+}
+```
+</CodeGroup>
+
+This file is generated in `index.ts:938` and includes:
+- **routes**: Complete routing rules in execution order
+- **images**: Next.js image optimization configuration
+- **wildcard**: i18n domain configuration
+- **overrides**: Content-type and path overrides for static files
+
+## Function outputs
+
+The adapter generates different output types based on your application structure:
+
+### Node.js functions
+
+For pages and API routes using the Node.js runtime:
+
+<Accordion title="Function directory structure">
+```bash
+index.func/
+├── .vc-config.json        # Function configuration
+└── ___next_launcher.cjs   # Handler wrapper
+```
+
+The `.vc-config.json` contains:
+```json
+{
+  "runtime": "nodejs20.x",
+  "handler": "___next_launcher.cjs",
+  "launcherType": "Nodejs",
+  "supportsResponseStreaming": true,
+  "supportsMultiPayloads": true,
+  "filePathMap": { ... }
+}
+```
+</Accordion>
+
+<Note>
+The adapter creates deterministic functions by filtering headers and deployment IDs from `routes-manifest.json` (see `outputs.ts:251-266`). This enables function deduplication at the infrastructure level.
+</Note>
+
+### Edge functions
+
+For pages and middleware using the Edge runtime:
+
+<Accordion title="Edge function structure">
+```bash
+api/edge.func/
+├── .vc-config.json    # Edge configuration
+├── index.js           # Edge function source
+└── assets/            # Non-JS assets
+```
+
+Edge functions are processed in `outputs.ts:665-787` and include:
+- Automatic WASM asset bundling (stored in `wasm/` directory)
+- Non-JS assets in separate `assets/` directory
+- Regional deployment configuration
+</Accordion>
+
+### Middleware
+
+Middleware can run on either Node.js or Edge runtime:
+
+```typescript
+// Generated middleware routes include matcher configuration
+{
+  "src": "^/api/.*",
+  "middlewarePath": "/middleware",
+  "middlewareRawSrc": ["/api/:path*"],
+  "continue": true,
+  "override": true
+}
+```
+
+The adapter handles middleware in `outputs.ts:789-830` and generates appropriate routes based on the `config.matchers` array.
+
+## Prerender outputs
+
+Static and ISR (Incremental Static Regeneration) pages generate prerender configurations:
+
+### Prerender config files
+
+Each prerendered route gets a `.prerender-config.json` file:
+
+<CodeGroup>
+```json .prerender-config.json
+{
+  "group": "group-id",
+  "expiration": 60,
+  "staleExpiration": 86400,
+  "sourcePath": "/[slug]",
+  "passQuery": true,
+  "allowQuery": ["slug"],
+  "bypassToken": "...",
+  "initialHeaders": {
+    "vary": "RSC, Next-Router-State-Tree, Next-Router-Prefetch"
+  },
+  "fallback": "./index.prerender-fallback.html"
+}
+```
+</CodeGroup>
+
+<Warning>
+Prerender outputs with `fallback: false` are tracked in a special map (`prerenderFallbackFalseMap`) to ensure non-existent dynamic routes return 404 instead of rendering fallback content. This map is embedded in the handler source code.
+</Warning>
+
+### PPR (Partial Prerendering) support
+
+For routes using PPR, the adapter handles postponed state:
+
+```typescript
+// When postponedState exists (outputs.ts:545-580)
+initialHeaders['content-type'] = 
+  `application/x-nextjs-pre-render; state-length=${
+    postponedState.length
+  }; origin="text/html; charset=utf-8"`
+```
+
+The fallback file contains the postponed state prepended to the HTML content.
+
+## Static outputs
+
+Static files are processed differently based on their type:
+
+### Public folder files
+
+Files from the `public/` directory are copied to `.next/output/static/` with basePath handling:
+
+```typescript
+// Processed in outputs.ts:69-95
+const destination = path.join(
+  vercelOutputDir,
+  'static',
+  config.basePath || '',
+  item
+)
+```
+
+### Automatically optimized pages
+
+Static HTML pages get special treatment:
+
+<Accordion title="Static HTML overrides">
+```typescript
+// For .html files (outputs.ts:122-128)
+vercelConfig.overrides['./page.html'] = {
+  contentType: 'text/html; charset=utf-8',
+  path: './page'  // Removes .html extension
+}
+```
+
+This allows requests to `/page` to serve `page.html` with the correct content type.
+</Accordion>
+
+## Asset handling
+
+### File path mapping
+
+Each function includes a `filePathMap` that maps relative paths to absolute paths:
+
+```json
+{
+  "filePathMap": {
+    "server/pages/index.js": "packages/app/server/pages/index.js",
+    "server/chunks/123.js": "packages/app/server/chunks/123.js"
+  }
+}
+```
+
+This mapping ensures all required assets are included in the function bundle.
+
+### Symlinked functions
+
+When multiple routes share the same function (common with ISR), the adapter creates symlinks:
+
+```typescript
+// outputs.ts:517-535
+if (output.pathname !== parentNodeOutput.pathname) {
+  await fs.symlink(
+    path.relative(
+      path.dirname(prerenderFunctionDir),
+      parentFunctionDir
+    ),
+    prerenderFunctionDir
+  )
+}
+```
+
+This reduces redundant function creation and improves deployment efficiency.
+
+## Build optimization
+
+### Concurrent processing
+
+The adapter uses semaphores to limit concurrent file operations:
+
+```typescript
+// outputs.ts:109
+const fsSema = new Sema(16, { capacity: outputs.length });
+```
+
+This prevents overwhelming the file system while maintaining good performance.
+
+### Write deduplication
+
+The adapter includes a write lock mechanism to prevent duplicate writes:
+
+```typescript
+// outputs.ts:42-57
+const writeLock = new Map<string, Promise<void>>();
+
+const writeIfNotExists = async (filePath: string, content: string) => {
+  await writeLock.get(filePath);
+  // Only write if file doesn't exist
+}
+```
+
+This is particularly important when multiple prerender routes share the same handler.
+
+## Special route handling
+
+### 404 and 500 pages
+
+The adapter tracks custom error pages:
+
+```typescript
+// index.ts:83-125
+let hasNotFoundOutput = false;
+let has404Output = false;
+let has500Output = false;
+```
+
+The priority order for 404 handling:
+1. `/_not-found` (App Router)
+2. `/404` (Pages Router custom)
+3. `/_error` (Default fallback)
+
+### App Router RSC routes
+
+React Server Component routes receive special handling:
+
+<CodeGroup>
+```typescript RSC route generation
+{
+  "src": "^/(?!.+\\.rsc)(.+?)(?:/)?$",
+  "dest": "/$1.rsc",
+  "has": [{
+    "type": "header",
+    "key": "Next-Router-State-Tree",
+    "value": "1"
+  }],
+  "headers": {
+    "vary": "RSC, Next-Router-State-Tree, Next-Router-Prefetch"
+  }
+}
+```
+</CodeGroup>
+
+These routes (defined in `index.ts:499-598`) enable RSC prefetch and streaming.
+
+## Debugging build outputs
+
+To inspect the generated output:
+
+```bash
+# View the config
+cat .next/output/config.json | jq .
+
+# List all functions
+ls -la .next/output/functions/
+
+# Inspect a function config
+cat .next/output/functions/index.func/.vc-config.json | jq .
+
+# Check static files
+ls -la .next/output/static/
+```
+
+<Note>
+The output directory structure conforms to Vercel's [Build Output API v3](https://vercel.com/docs/build-output-api/v3) specification. Understanding this structure helps debug deployment issues and optimize your build.
+</Note>

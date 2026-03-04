@@ -1,0 +1,94 @@
+---
+title: Installation
+description: Install and configure the Next.js Vercel Adapter in your project
+---
+
+The Vercel adapter is automatically configured when deploying on Vercel. For debugging or local development, you can install and configure it manually.
+
+## Automatic installation
+
+When you deploy your Next.js application to Vercel, the adapter is automatically configured. No manual installation is required.
+
+<Note>
+  It is recommended to let Vercel automatically configure the adapter to receive automatic fixes and updates.
+</Note>
+
+## Manual installation
+
+For debugging purposes or local development, you can install the adapter package manually.
+
+### Package managers
+
+<CodeGroup>
+
+```bash npm
+npm install @next-community/adapter-vercel@latest
+```
+
+```bash yarn
+yarn add @next-community/adapter-vercel@latest
+```
+
+```bash pnpm
+pnpm add @next-community/adapter-vercel@latest
+```
+
+```bash bun
+bun add @next-community/adapter-vercel@latest
+```
+
+</CodeGroup>
+
+### Requirements
+
+The adapter has the following requirements:
+
+<ParamField path="Node.js" type="string" required>
+  Version 20.6.0 or higher
+</ParamField>
+
+<ParamField path="Next.js" type="string" required>
+  Version 16.1.1-canary.18 or higher
+</ParamField>
+
+## Configuration
+
+After installation, configure the adapter in your Next.js configuration file.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts next.config.ts
+    import { NextConfig } from 'next'
+
+    const nextConfig: NextConfig = {
+      experimental: {
+        adapterPath: require.resolve('@next-community/adapter-vercel')
+      }
+    }
+
+    export default nextConfig
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```js next.config.js
+    /** @type {import('next').NextConfig} */
+    const nextConfig = {
+      experimental: {
+        adapterPath: require.resolve('@next-community/adapter-vercel')
+      }
+    }
+
+    module.exports = nextConfig
+    ```
+  </Tab>
+</Tabs>
+
+## Verification
+
+To verify the adapter is working correctly, build your Next.js application:
+
+```bash
+npm run build
+```
+
+The adapter will generate a `.next/output` directory containing the Vercel deployment configuration and outputs.

@@ -1,0 +1,374 @@
+---
+title: App Router support
+description: Deploy App Router features including RSC, Server Actions, and streaming
+---
+
+The Vercel adapter provides comprehensive support for Next.js App Router, including React Server Components (RSC), Server Actions, and advanced routing features.
+
+## App Router detection
+
+The adapter detects App Router usage during the build:
+
+```typescript
+const hasAppDir =
+  outputs.appPages.length > 0 || outputs.appRoutes.length > 0;
+```
+
+Location: `index.ts:44-45`
+
+## React Server Components (RSC)
+
+RSC requests are handled through special routing rules:
+
+<Steps>
+  <Step title="RSC header detection">
+    Requests with the RSC header are routed to `.rsc` files:
+    
+    ```typescript
+    {
+      src: `^${path.posix.join('/', config.basePath, '/?')}`,
+      has: [
+        {
+          type: 'header' as const,
+          key: routing.rsc.header,
+          value: '1',
+        },
+      ],
+      dest: path.posix.join('/', config.basePath, '/index.rsc'),
+      headers: {
+        vary: routing.rsc.varyHeader,
+      },
+      continue: true,
+      override: true,
+    }
+    ```
+    
+    Location: `index.ts:561-576`
+  </Step>
+
+  <Step title="Dynamic RSC routes">
+    Non-root paths are handled with pattern matching:
+    
+    ```typescript
+    {
+      src: `^${path.posix.join(
+        '/',
+        config.basePath,
+        '/((?!.+\\.rsc).+?)(?:/)?$'
+      )}`,
+      has: [
+        {
+          type: 'header' as const,
+          key: routing.rsc.header,
+          value: '1',
+        },
+      ],
+      dest: path.posix.join('/', config.basePath, '/$1.rsc'),
+      headers: {
+        vary: routing.rsc.varyHeader,
+      },
+      continue: true,
+      override: true,
+    }
+    ```
+    
+    Location: `index.ts:577-597`
+  </Step>
+</Steps>
+
+## Prefetch segment handling
+
+The adapter supports App Router's segment prefetching:
+
+```typescript
+const shouldHandleSegmentPrefetches = outputs.appPages.length > 0;
+
+if (shouldHandleSegmentPrefetches) {
+  modifyWithRewriteHeaders(convertedRewrites.beforeFiles, {
+    shouldHandleSegmentPrefetches,
+  });
+
+  modifyWithRewriteHeaders(convertedRewrites.afterFiles, {
+    isAfterFilesRewrite: true,
+    shouldHandleSegmentPrefetches,
+  });
+
+  modifyWithRewriteHeaders(convertedRewrites.fallback, {
+    shouldHandleSegmentPrefetches,
+  });
+}
+```
+
+Location: `index.ts:206-224`
+
+### Prefetch rewrites
+
+Rewrites are modified to handle `.segments/.+.segment.rsc` suffixes:
+
+```typescript
+if (isAfterFilesRewrite) {
+  const parts = ['\\.rsc'];
+  if (shouldHandleSegmentPrefetches) {
+    parts.push('\\.segments/.+\\.segment\\.rsc');
+  }
+
+  const rscSuffix = parts.join('|');
+
+  rewrite.src = rewrite.src.replace(
+    /(\\\/(\?)?)?\(\?:\\\/\)\?\$$/,
+    `(?:/)?(?<rscsuff>${rscSuffix})?`
+  );
+
+  const destQueryIndex = rewrite.dest.indexOf('?');
+  if (destQueryIndex === -1) {
+    rewrite.dest = `${rewrite.dest}$rscsuff`;
+  } else {
+    rewrite.dest = `${rewrite.dest.substring(
+      0,
+      destQueryIndex
+    )}$rscsuff${rewrite.dest.substring(destQueryIndex)}`;
+  }
+}
+```
+
+Location: `routing.ts:77-102`
+
+### Prefetch route handling
+
+Prefetch requests with segment headers are routed to segment directories:
+
+```typescript
+{
+  src: path.posix.join(
+    '/',
+    config.basePath,
+    '/(?<path>.+?)(?:/)?$'
+  ),
+  dest: path.posix.join(
+    '/',
+    config.basePath,
+    `/$path${routing.rsc.prefetchSegmentDirSuffix}/$segmentPath${routing.rsc.prefetchSegmentSuffix}`
+  ),
+  has: [
+    {
+      type: 'header' as const,
+      key: routing.rsc.header,
+      value: '1',
+    },
+    {
+      type: 'header' as const,
+      key: routing.rsc.prefetchHeader,
+      value: '1',
+    },
+    {
+      type: 'header' as const,
+      key: routing.rsc.prefetchSegmentHeader,
+      value: '/(?<segmentPath>.+)',
+    },
+  ],
+  continue: true,
+  override: true,
+}
+```
+
+Location: `index.ts:501-532`
+
+## App Router pages
+
+App Router pages are processed as serverless functions:
+
+```typescript
+for (const output of [
+  ...outputs.appPages,
+  ...outputs.appRoutes,
+  ...outputs.pages,
+  ...outputs.pagesApi,
+]) {
+  if ('runtime' in output) {
+    if (output.runtime === 'nodejs') {
+      nodeOutputsParentMap.set(output.id, output);
+      nodeOutputs.push(output);
+    } else if (output.runtime === 'edge') {
+      edgeOutputs.push(output);
+    }
+  }
+}
+```
+
+Location: `index.ts:87-113`
+
+## Route handlers
+
+App Router route handlers are detected and processed:
+
+```typescript
+const isAppRouterRoute =
+  sourceFile.endsWith('/route.js') || sourceFile.endsWith('/route.ts');
+```
+
+Location: `outputs.ts:213-214`
+
+## App path normalization
+
+The adapter handles App Router path normalization for route groups:
+
+```typescript
+let appPathRoutesManifest = {} as Record<string, string>;
+
+try {
+  appPathRoutesManifest = require(
+    './' +
+      path.posix.join(
+        relativeDistDir,
+        'app-path-routes-manifest.json'
+      )
+  ) as Record<string, string>;
+} catch (_) {}
+
+const inversedAppRoutesManifest = Object.entries(
+  appPathRoutesManifest
+).reduce(
+  (manifest, [originalKey, normalizedKey]) => {
+    manifest[normalizedKey] = originalKey;
+    return manifest;
+  },
+  {} as Record<string, string>
+);
+```
+
+Location: `node-handler.ts:111-132`
+
+This maps paths like `/hello/(foo)/page` to the normalized `/hello`.
+
+## App Router 404 handling
+
+The adapter prioritizes App Router's `_not-found` page:
+
+```typescript
+if (!has404Output && output.pathname.endsWith('/_not-found')) {
+  hasNotFoundOutput = true;
+}
+
+const notFoundPath = hasNotFoundOutput
+  ? '/_not-found'
+  : has404Output
+    ? '/404'
+    : '/_error';
+```
+
+Location: `index.ts:98-130`
+
+## 404 rendering in functions
+
+The adapter configures 404 rendering for App Router:
+
+```typescript
+routerServerGlobal[RouterServerContextSymbol]['.'] = {
+  async render404(req, res) {
+    let mod;
+
+    try {
+      try {
+        mod = await require(
+          './' +
+            path.posix.join(
+              relativeDistDir,
+              'server',
+              'app',
+              `_not-found`,
+              'page.js'
+            )
+        );
+      } catch {}
+
+      if (!mod) {
+        mod = await require(
+          './' +
+            path.posix.join(
+              relativeDistDir,
+              'server',
+              'pages',
+              `404.js`
+            )
+        );
+      }
+    } catch (_) {
+      mod = await require(
+        './' +
+          path.posix.join(
+            relativeDistDir,
+            'server',
+            'pages',
+            `_error.js`
+          )
+      );
+    }
+    res.statusCode = 404;
+
+    if (mod) {
+      await mod.handler(req, res, {
+        waitUntil: getRequestContext().waitUntil,
+      });
+    } else {
+      res.end('This page could not be found');
+    }
+  },
+};
+```
+
+Location: `node-handler.ts:296-356`
+
+<Note>
+  The adapter tries `_not-found/page.js` first, then falls back to `404.js`, and finally `_error.js`.
+</Note>
+
+## Vary header handling
+
+RSC responses include proper Vary headers:
+
+```typescript
+headers: {
+  vary: routing.rsc.varyHeader,
+}
+```
+
+Location: `index.ts:572`
+
+This ensures correct caching behavior for RSC requests.
+
+## Index RSC normalization
+
+The adapter normalizes `/index.rsc` to `/`:
+
+```typescript
+{
+  src: path.posix.join(
+    '/',
+    config.basePath,
+    '/index(\\.action|\\.rsc)'
+  ),
+  dest: path.posix.join('/', config.basePath),
+  continue: true,
+}
+```
+
+Location: `index.ts:635-645`
+
+## RSC fallback fixes
+
+The adapter fixes rewrites that result in invalid `.rsc` paths:
+
+```typescript
+{
+  src: path.posix.join('/', config.basePath, '/\\.rsc$'),
+  dest: path.posix.join('/', config.basePath, `/index.rsc`),
+  check: true,
+},
+{
+  src: path.posix.join('/', config.basePath, '(.+)/\\.rsc$'),
+  dest: path.posix.join('/', config.basePath, '$1.rsc'),
+  check: true,
+}
+```
+
+Location: `index.ts:651-665`

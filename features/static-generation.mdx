@@ -1,0 +1,217 @@
+---
+title: Static site generation
+description: Build and deploy statically generated pages with optimal performance
+---
+
+The Vercel adapter handles Static Site Generation (SSG) by processing static file outputs and configuring them for optimal delivery on Vercel's infrastructure.
+
+## Static file handling
+
+The adapter processes static outputs during the build phase:
+
+<Steps>
+  <Step title="Static file detection">
+    All static files from the build are collected:
+    
+    ```typescript
+    await handleStaticOutputs(outputs.staticFiles, {
+      config,
+      vercelConfig,
+      vercelOutputDir,
+    });
+    ```
+    
+    Location: `index.ts:73-77`
+  </Step>
+
+  <Step title="Output processing">
+    Each static file is copied to the Vercel output directory with proper configuration:
+    
+    ```typescript
+    await Promise.all(
+      outputs.map(async (output) => {
+        await fsSema.acquire();
+
+        const srcExtension = path.extname(output.filePath);
+        const isHtml = srcExtension === '.html';
+
+        if (isHtml) {
+          vercelConfig.overrides[
+            path.posix.join('./', output.pathname + '.html')
+          ] = {
+            contentType: 'text/html; charset=utf-8',
+            path: path.posix.join('./', output.pathname),
+          };
+        }
+        
+        const destination = path.join(
+          vercelOutputDir,
+          'static',
+          output.pathname + (isHtml ? '.html' : '')
+        );
+        
+        await copy(output.filePath, destination);
+      })
+    );
+    ```
+    
+    Location: `outputs.ts:111-142`
+  </Step>
+
+  <Step title="Content-Type configuration">
+    HTML files receive special handling to ensure proper content type and clean URLs:
+    
+    - Files are saved with `.html` extension
+    - Content-Type override set to `text/html; charset=utf-8`
+    - Path override removes `.html` from the URL
+  </Step>
+</Steps>
+
+## Public directory handling
+
+Static assets from the `public` directory are automatically processed:
+
+```typescript
+await handlePublicFiles(
+  path.join(projectDir, 'public'),
+  vercelOutputDir,
+  config
+);
+```
+
+Location: `index.ts:68-72`
+
+The implementation copies public files while respecting the `basePath` configuration:
+
+```typescript
+const destination = path.join(
+  vercelOutputDir,
+  'static',
+  config.basePath || '',
+  item
+);
+```
+
+Location: `outputs.ts:81-86`
+
+## Static route handling
+
+Static pages are detected during the build process:
+
+```typescript
+for (const output of [
+  ...outputs.appPages,
+  ...outputs.appRoutes,
+  ...outputs.pages,
+  ...outputs.pagesApi,
+  ...outputs.staticFiles,
+]) {
+  if (output.pathname.endsWith('/404')) {
+    has404Output = true;
+  }
+  if (output.pathname.endsWith('/500')) {
+    has500Output = true;
+  }
+}
+```
+
+Location: `index.ts:87-104`
+
+## 404 and 500 pages
+
+The adapter automatically configures custom error pages:
+
+```typescript
+const notFoundPath = hasNotFoundOutput
+  ? '/_not-found'
+  : has404Output
+    ? '/404'
+    : '/_error';
+```
+
+Location: `index.ts:126-130`
+
+<Note>
+  The adapter prioritizes App Router's `_not-found` page over Pages Router's `404` page, falling back to `_error` if neither exists.
+</Note>
+
+## Static optimization
+
+### HTML files
+
+HTML files receive special optimization through content-type overrides:
+
+```typescript
+vercelConfig.overrides[
+  path.posix.join('./', output.pathname + '.html')
+] = {
+  contentType: 'text/html; charset=utf-8',
+  path: path.posix.join('./', output.pathname),
+};
+```
+
+This ensures:
+- Proper MIME type for HTML content
+- Clean URLs without `.html` extension
+- Optimal browser caching
+
+Location: `outputs.ts:123-128`
+
+### Concurrent processing
+
+Static files are processed concurrently using semaphores for optimal performance:
+
+```typescript
+const fsSema = new Sema(16, { capacity: outputs.length });
+
+await Promise.all(
+  outputs.map(async (output) => {
+    await fsSema.acquire();
+    // ... process file
+    fsSema.release();
+  })
+);
+```
+
+Location: `outputs.ts:109-142`
+
+<Note>
+  The adapter processes up to 16 files concurrently, balancing performance with system resources.
+</Note>
+
+## basePath support
+
+All static files respect the `basePath` configuration:
+
+```typescript
+const destination = path.join(
+  vercelOutputDir,
+  'static',
+  config.basePath || '',
+  item
+);
+```
+
+This ensures static files are served from the correct path when using a custom base path.
+
+## Not Found fallback
+
+The adapter creates a fallback file for `_next/static` 404 responses:
+
+```typescript
+await fs.writeFile(
+  path.posix.join(
+    vercelOutputDir,
+    'static',
+    config.basePath || '',
+    '_next/static/not-found.txt'
+  ),
+  'Not Found'
+);
+```
+
+Location: `outputs.ts:144-152`
+
+<Warning>
+  This file ensures that missing static assets return appropriate 404 responses instead of falling back to the application.
+</Warning>

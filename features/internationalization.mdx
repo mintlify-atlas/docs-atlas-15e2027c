@@ -1,0 +1,415 @@
+---
+title: Internationalization
+description: Configure i18n routing, locale detection, and domain-based locales
+---
+
+The Vercel adapter provides comprehensive support for Next.js internationalization (i18n), including automatic locale routing, domain-based locales, and locale detection.
+
+## i18n configuration
+
+The adapter reads i18n configuration from your Next.js config:
+
+```typescript
+const i18nConfig = config.i18n;
+const vercelConfig: VercelConfig = {
+  version: 3,
+  overrides: {},
+  wildcard: i18nConfig?.domains
+    ? i18nConfig.domains.map((item) => {
+        return {
+          domain: item.domain,
+          value:
+            item.defaultLocale === i18nConfig.defaultLocale
+              ? ''
+              : `/${item.defaultLocale}`,
+        };
+      })
+    : undefined,
+  images: getImagesConfig(config),
+};
+```
+
+Location: `index.ts:50-66`
+
+## Wildcard domain configuration
+
+Domain-based locales use the wildcard configuration:
+
+<CodeGroup>
+```typescript Configuration
+wildcard: i18nConfig?.domains
+  ? i18nConfig.domains.map((item) => {
+      return {
+        domain: item.domain,
+        value:
+          item.defaultLocale === i18nConfig.defaultLocale
+            ? ''
+            : `/${item.defaultLocale}`,
+      };
+    })
+  : undefined
+```
+
+```typescript Type definition
+type WildCard = {
+  domain: string;
+  value: string;
+};
+
+export type WildcardConfig = Array<WildCard>;
+```
+</CodeGroup>
+
+Location: `index.ts:54-64` and `types.ts:31-36`
+
+<Note>
+  The wildcard value is empty for the default locale matching the global default, or contains the locale path for other locales.
+</Note>
+
+## Automatic locale prefix
+
+The adapter automatically adds the default locale to paths:
+
+<Steps>
+  <Step title="Root path handling">
+    ```typescript
+    {
+      src: `^${path.posix.join(
+        '/',
+        config.basePath,
+        '/'
+      )}(?!(?:_next/.*|${config.i18n.locales
+        .map((locale) => escapeStringRegexp(locale))
+        .join('|')})(?:/.*|$))$`,
+      dest: `${config.basePath && config.basePath !== '/'
+        ? path.posix.join('/', config.basePath)
+        : ''
+      }$wildcard${config.trailingSlash ? '/' : ''}`,
+      continue: true,
+    }
+    ```
+    
+    Location: `index.ts:287-303`
+  </Step>
+
+  <Step title="Path with segments">
+    ```typescript
+    {
+      src: `^${path.posix.join(
+        '/',
+        config.basePath,
+        '/'
+      )}(?!(?:_next/.*|${config.i18n.locales
+        .map((locale) => escapeStringRegexp(locale))
+        .join('|')})(?:/.*|$))(.*)$`,
+      dest: `${config.basePath && config.basePath !== '/'
+        ? path.posix.join('/', config.basePath)
+        : ''
+      }$wildcard/$1`,
+      continue: true,
+    }
+    ```
+    
+    Location: `index.ts:304-320`
+  </Step>
+</Steps>
+
+## Domain-based locale redirects
+
+When using domain-based locales with detection enabled:
+
+```typescript
+...(config.i18n.domains &&
+config.i18n.domains.length > 0 &&
+config.i18n.localeDetection !== false
+  ? [
+      {
+        src: `^${path.posix.join(
+          '/',
+          config.basePath
+        )}/?(?:${config.i18n.locales
+          .map((locale) => escapeStringRegexp(locale))
+          .join('|')})?/?$`,
+        locale: {
+          redirect: config.i18n.domains.reduce(
+            (prev: Record<string, string>, item) => {
+              prev[item.defaultLocale] = `http${
+                item.http ? '' : 's'
+              }://${item.domain}/`;
+
+              if (item.locales) {
+                item.locales.map((locale) => {
+                  prev[locale] = `http${item.http ? '' : 's'}://${
+                    item.domain
+                  }/${locale}`;
+                });
+              }
+              return prev;
+            },
+            {}
+          ),
+          cookie: 'NEXT_LOCALE',
+        },
+        continue: true,
+      },
+    ]
+  : [])
+```
+
+Location: `index.ts:323-357`
+
+<Note>
+  Domain redirects use the `NEXT_LOCALE` cookie to detect the user's preferred locale.
+</Note>
+
+## Path-based locale redirects
+
+For path-based locales with detection enabled:
+
+```typescript
+...(config.i18n.localeDetection !== false
+  ? [
+      {
+        src: '/',
+        locale: {
+          redirect: config.i18n.locales.reduce(
+            (prev: Record<string, string>, locale) => {
+              prev[locale] =
+                locale === config.i18n?.defaultLocale
+                  ? `/`
+                  : `/${locale}`;
+              return prev;
+            },
+            {}
+          ),
+          cookie: 'NEXT_LOCALE',
+        },
+        continue: true,
+      },
+    ]
+  : [])
+```
+
+Location: `index.ts:360-384`
+
+## Default locale prefix handling
+
+The adapter adds the default locale prefix before user redirects:
+
+```typescript
+{
+  src: `^${path.posix.join('/', config.basePath)}$`,
+  dest: `${path.posix.join(
+    '/',
+    config.basePath,
+    config.i18n.defaultLocale
+  )}`,
+  continue: true,
+},
+{
+  src: `^${path.posix.join(
+    '/',
+    config.basePath,
+    '/'
+  )}(?!(?:_next/.*|${config.i18n.locales
+    .map((locale) => escapeStringRegexp(locale))
+    .join('|')})(?:/.*|$))(.*)$`,
+  dest: `${path.posix.join(
+    '/',
+    config.basePath,
+    config.i18n.defaultLocale
+  )}/$1`,
+  continue: true,
+}
+```
+
+Location: `index.ts:390-418`
+
+## 404 and 500 locale handling
+
+Error pages respect locale routing:
+
+<CodeGroup>
+```typescript 404 handling
+...(config.i18n
+  ? [
+      {
+        src: `${path.posix.join(
+          '/',
+          config.basePath,
+          '/'
+        )}(?:${config.i18n.locales
+          .map((locale) => locale.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('|')})?[/]?404/?`,
+        status: 404,
+        continue: true,
+        missing: [
+          {
+            type: 'header' as const,
+            key: 'x-prerender-revalidate',
+          },
+        ],
+      },
+    ]
+  : [...])
+```
+
+```typescript 500 handling
+...(config.i18n && has500Output
+  ? [
+      {
+        src: `${path.posix.join(
+          '/',
+          config.basePath,
+          '/'
+        )}(?<nextLocale>${config.i18n.locales
+          .map((locale) => escapeStringRegexp(locale))
+          .join('|')})(/.*|$)`,
+        dest: path.posix.join('/', config.basePath, '/$nextLocale/500'),
+        status: 500,
+        caseSensitive: true,
+      },
+      {
+        src: path.posix.join('/', config.basePath, '.*'),
+        dest: path.posix.join(
+          '/',
+          config.basePath,
+          `/${config.i18n.defaultLocale}/500`
+        ),
+        status: 500,
+      },
+    ]
+  : [...])
+```
+</CodeGroup>
+
+Location: `index.ts:433-489` and `index.ts:893-935`
+
+## Locale prefix removal
+
+Locale prefixes are removed when checking public files:
+
+```typescript
+{
+  src: path.posix.join(
+    '/',
+    config.basePath,
+    escapeStringRegexp(config.i18n.defaultLocale)
+  ),
+  dest: '/',
+  check: true,
+},
+{
+  src: `^${path.posix.join(
+    '/',
+    config.basePath
+  )}/?(?:${config.i18n.locales
+    .map((locale) => escapeStringRegexp(locale))
+    .join('|')})/(.*)`,
+  dest: `${path.posix.join('/', config.basePath, '/')}$1`,
+  check: true,
+}
+```
+
+Location: `index.ts:732-751`
+
+## Locale detection control
+
+When locale detection is disabled, rewrites are added as fallbacks:
+
+```typescript
+...(config.i18n?.localeDetection === false
+  ? [
+      {
+        src: `^${path.posix.join('/', config.basePath)}$`,
+        dest: `${path.posix.join(
+          '/',
+          config.basePath,
+          config.i18n.defaultLocale
+        )}`,
+        check: true,
+      },
+      {
+        src: `^${path.posix.join(
+          '/',
+          config.basePath,
+          '/'
+        )}(?!(?:_next/.*|${config.i18n.locales
+          .map((locale) => escapeStringRegexp(locale))
+          .join('|')})(?:/.*|$))(.*)$`,
+        dest: `${path.posix.join(
+          '/',
+          config.basePath,
+          config.i18n.defaultLocale
+        )}/$1`,
+        check: true,
+      },
+    ]
+  : [])
+```
+
+Location: `index.ts:697-730`
+
+<Warning>
+  With locale detection disabled, the default locale prefix is added during the "check" phase instead of before redirects.
+</Warning>
+
+## Locale normalization in handlers
+
+The Node.js handler normalizes locale paths:
+
+```typescript
+function normalizeLocalePath(
+  pathname: string,
+  locales?: readonly string[]
+): {
+  pathname: string;
+  locale?: string;
+} {
+  if (!locales) return { pathname };
+
+  const lowercasedLocales = locales.map((locale) =>
+    locale.toLowerCase()
+  );
+
+  const segments = pathname.split('/', 2);
+  if (!segments[1]) return { pathname };
+
+  const segment = segments[1].toLowerCase();
+
+  const index = lowercasedLocales.indexOf(segment);
+  if (index < 0) return { pathname };
+
+  const detectedLocale = locales[index];
+  pathname = pathname.slice(detectedLocale.length + 1) || '/';
+
+  return { pathname, locale: detectedLocale };
+}
+```
+
+Location: `node-handler.ts:134-168`
+
+## Locale in function context
+
+The detected locale is passed to page handlers:
+
+```typescript
+const {
+  matchedPathname: page,
+  locale,
+  matches,
+} = matchUrlToPage(urlPathname);
+
+await mod.handler(req, res, {
+  waitUntil: getRequestContext().waitUntil,
+  requestMeta: {
+    ...internalMetadata,
+    minimalMode: true,
+    relativeProjectDir: '.',
+    locale,
+    initURL,
+  },
+});
+```
+
+Location: `node-handler.ts:387-431`

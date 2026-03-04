@@ -1,0 +1,434 @@
+---
+title: Custom routing
+description: Advanced routing patterns, customization, and how the adapter handles complex Next.js routing scenarios
+---
+
+The Next.js Vercel Adapter generates sophisticated routing configurations that handle rewrites, redirects, headers, middleware, and various Next.js features. This page explains the routing system and customization options.
+
+## Route generation order
+
+Routes are generated in a specific order (defined in `index.ts:261-936`) to ensure correct precedence:
+
+```typescript
+vercelConfig.routes = [
+  // 1. Priority redirects
+  // 2. Next.js data URL normalization
+  // 3. i18n locale handling
+  // 4. User headers
+  // 5. User redirects
+  // 6. Middleware routes
+  // 7. beforeFiles rewrites
+  // 8. filesystem check
+  // 9. afterFiles rewrites
+  // 10. resource check
+  // 11. fallback rewrites
+  // 12. Dynamic routes
+  // 13. Error handling
+]
+```
+
+<Warning>
+Route order is critical. Changing the order can break authentication, redirects, or cause incorrect page rendering. The adapter follows Next.js's routing semantics exactly.
+</Warning>
+
+## Rewrite handling
+
+The adapter extracts and normalizes rewrites from three phases:
+
+### Rewrite phases
+
+<Accordion title="beforeFiles rewrites">
+Run before filesystem checks, allowing you to rewrite before Next.js looks for static files:
+
+```typescript
+// routing.ts:161-167
+beforeFiles: routing.beforeFiles.filter(isRewriteRoute).map((item) => {
+  const route = normalize(item);
+  delete route.check;      // No filesystem check
+  route.continue = true;   // Continue to next routes
+  route.override = true;   // Can override later routes
+  return route;
+})
+```
+
+These rewrites set special headers to track the rewritten path.
+</Accordion>
+
+<Accordion title="afterFiles rewrites">
+Run after filesystem check but before dynamic routes:
+
+```typescript
+// routing.ts:168-169
+afterFiles: routing.afterFiles.filter(isRewriteRoute).map(normalize)
+```
+
+These include `check: true` to verify the destination exists.
+</Accordion>
+
+<Accordion title="fallback rewrites">
+Run after all other routing logic as a final catch-all:
+
+```typescript
+// routing.ts:169-170
+fallback: routing.fallback.filter(isRewriteRoute).map(normalize)
+```
+</Accordion>
+
+### Rewrite headers
+
+The adapter adds tracking headers to rewrites for App Router:
+
+```typescript
+// routing.ts:108-123
+rewrite.headers = {
+  ...rewrite.headers,
+  'x-nextjs-rewritten-path': pathname,
+  'x-nextjs-rewritten-query': query
+}
+```
+
+These headers allow Next.js to properly handle RSC requests and prefetching after rewrites.
+
+## RSC and prefetch routing
+
+App Router applications require special routes for React Server Components:
+
+### Standard RSC routes
+
+<CodeGroup>
+```typescript Basic RSC routing
+// Rewrite requests with RSC header to .rsc files
+{
+  "src": "^/(?!.+\\.rsc)(.+?)(?:/)?$",
+  "dest": "/$1.rsc",
+  "has": [{
+    "type": "header",
+    "key": "Next-Router-State-Tree",
+    "value": "1"
+  }],
+  "headers": {
+    "vary": "RSC, Next-Router-State-Tree, Next-Router-Prefetch"
+  },
+  "continue": true,
+  "override": true
+}
+```
+</CodeGroup>
+
+### Segment prefetch routes
+
+For PPR (Partial Prerendering), the adapter generates segment prefetch routes:
+
+```typescript
+// index.ts:500-559
+{
+  src: '/(?<path>.+?)(?:/)?$',
+  dest: '/$path.segments/$segmentPath.segment.rsc',
+  has: [
+    { type: 'header', key: 'Next-Router-State-Tree', value: '1' },
+    { type: 'header', key: 'Next-Router-Prefetch', value: '1' },
+    { type: 'header', key: 'Next-Router-Segment-Prefetch', value: '/(?<segmentPath>.+)' }
+  ]
+}
+```
+
+These routes enable granular prefetching of page segments.
+
+## Middleware routing
+
+Middleware generates routes with special configuration:
+
+```typescript
+// outputs.ts:812-827
+for (const matcher of output.config.matchers || []) {
+  const route: RouteWithSrc = {
+    continue: true,
+    has: matcher.has,
+    src: matcher.sourceRegex,
+    missing: matcher.missing,
+    middlewarePath: output.pathname,
+    middlewareRawSrc: [matcher.source],
+    override: true
+  };
+  routes.push(route);
+}
+```
+
+<Note>
+The `middlewarePath` and `middlewareRawSrc` fields tell Vercel which function to invoke for middleware processing. The `override: true` flag ensures middleware runs before other routes.
+</Note>
+
+## Redirect patterns
+
+The adapter extracts redirects from routing configuration:
+
+### Priority vs normal redirects
+
+```typescript
+// routing.ts:176-211
+function extractRedirects(routing) {
+  const priorityRedirects: RouteWithSrc[] = [];
+  const normalRedirects: RouteWithSrc[] = [];
+  
+  for (const route of routes) {
+    if (!isRedirectStatus(route.status)) continue;
+    
+    if (route.priority) {
+      vercelRoute.continue = true;  // Allow fallthrough
+      priorityRedirects.push(vercelRoute);
+    } else {
+      normalRedirects.push(vercelRoute);
+    }
+  }
+}
+```
+
+Priority redirects run first and can be overridden by later routes. Normal redirects are final.
+
+### Redirect status codes
+
+The adapter recognizes these redirect statuses:
+
+- **301**: Permanent redirect (cached by browsers)
+- **302**: Temporary redirect
+- **303**: See Other (POST → GET)
+- **307**: Temporary redirect (preserves method)
+- **308**: Permanent redirect (preserves method)
+
+## Header routes
+
+Custom headers are extracted and applied:
+
+```typescript
+// routing.ts:216-244
+export function extractHeaders(routing) {
+  const headers: RouteWithSrc[] = [];
+  
+  for (const route of routes) {
+    // Headers have headers but are not redirects
+    if (!route.headers || isRedirectStatus(route.status)) continue;
+    // Skip if this is a rewrite (has destination)
+    if (route.destination) continue;
+    
+    headers.push({
+      src: route.sourceRegex,
+      headers: route.headers,
+      continue: true,
+      has: route.has,
+      missing: route.missing,
+      ...(route.priority ? { important: true } : {})
+    });
+  }
+}
+```
+
+Headers with `important: true` cannot be overridden by later routes.
+
+## i18n routing
+
+For internationalized applications, the adapter generates complex locale handling:
+
+### Locale detection
+
+<CodeGroup>
+```typescript Automatic locale redirect
+{
+  "src": "/",
+  "locale": {
+    "redirect": {
+      "en": "/",
+      "fr": "/fr",
+      "de": "/de"
+    },
+    "cookie": "NEXT_LOCALE"
+  },
+  "continue": true
+}
+```
+</CodeGroup>
+
+This route (generated in `index.ts:360-384`) redirects users based on:
+1. `Accept-Language` header
+2. `NEXT_LOCALE` cookie
+3. Default locale as fallback
+
+### Domain-based routing
+
+For domain-specific locales:
+
+```typescript
+// index.ts:322-357
+{
+  src: '^/(en|fr|de)?/?$',
+  locale: {
+    redirect: {
+      en: 'https://example.com/',
+      fr: 'https://example.fr/',
+      de: 'https://example.de/'
+    },
+    cookie: 'NEXT_LOCALE'
+  }
+}
+```
+
+### Locale prefix handling
+
+```typescript
+// Auto-prefix non-locale paths with default locale
+{
+  src: '^/(?!(?:_next/.*|en|fr|de)(?:/.*|$))(.*)$',
+  dest: '/$defaultLocale/$1',
+  continue: true
+}
+```
+
+This rewrites `/about` → `/en/about` for the default locale.
+
+## Next.js data routes
+
+The adapter handles `_next/data` routes for Pages Router:
+
+### Data URL normalization
+
+```typescript
+// routing.ts:246-318
+export function normalizeNextDataRoutes(
+  config: NextConfig,
+  buildId: string,
+  shouldHandleMiddlewareDataResolving: boolean
+): RouteWithSrc[] {
+  return [
+    // Add x-nextjs-data header
+    {
+      src: '/_next/data/(.*)',
+      missing: [{ type: 'header', key: 'x-nextjs-data' }],
+      transforms: [{
+        type: 'request.headers',
+        op: 'append',
+        target: { key: 'x-nextjs-data' },
+        args: '1'
+      }]
+    },
+    // Strip _next/data prefix: /data/BUILD_ID/page.json → /page
+    {
+      src: `^/_next/data/${buildId}/(.*).json`,
+      dest: '/$1',
+      continue: true,
+      has: [{ type: 'header', key: 'x-nextjs-data' }]
+    }
+  ];
+}
+```
+
+### Data denormalization
+
+After routing, data URLs are converted back:
+
+```typescript
+// routing.ts:337-392
+export function denormalizeNextDataRoutes(
+  config: NextConfig,
+  buildId: string,
+  shouldHandleMiddlewareDataResolving: boolean
+): RouteWithSrc[] {
+  return [
+    // / → /_next/data/BUILD_ID/index.json
+    { src: '^/$', dest: `/_next/data/${buildId}/index.json` },
+    // /page → /_next/data/BUILD_ID/page.json
+    { src: '^/((?!_next/)(?:.*[^/]|.*))/?$', dest: `/_next/data/${buildId}/$1.json` }
+  ];
+}
+```
+
+This ensures middleware receives normalized URLs but functions receive proper data URLs.
+
+## Dynamic route matching
+
+Dynamic routes are converted from Next.js format to Vercel format:
+
+```typescript
+// index.ts:231-259
+for (const route of routing.dynamicRoutes) {
+  dynamicRoutes.push({
+    src: route.sourceRegex,     // e.g., '^/posts/(?<slug>[^/]+?)(?:/)?$'
+    dest: route.destination,     // e.g., '/posts/[slug]'
+    check: true,                 // Verify function exists
+    has: route.has,              // Conditional matching
+    missing: route.missing       // Negative conditions
+  });
+}
+```
+
+## Custom routing patterns
+
+### Conditional routing with `has` and `missing`
+
+You can use header/cookie/query conditions:
+
+```typescript
+// Route only matches if conditions are met
+{
+  src: '/api/.*',
+  dest: '/api/v2/$1',
+  has: [
+    { type: 'header', key: 'x-api-version', value: '2' }
+  ],
+  missing: [
+    { type: 'cookie', key: 'legacy' }
+  ]
+}
+```
+
+### onMatch routes
+
+Special routes that run during the "hit" phase:
+
+```typescript
+// routing.ts:320-335
+export function extractOnMatchRoutes(routing: { onMatch: AdapterRoute[] }) {
+  return routing.onMatch.map((route) => ({
+    src: route.sourceRegex,
+    dest: route.destination,
+    headers: route.headers,
+    continue: true,
+    important: true  // Cannot be overridden
+  }));
+}
+```
+
+These routes run after the matched path is determined but before the function executes.
+
+## Routing handles
+
+The adapter uses special "handles" to control routing flow:
+
+- `{ handle: 'filesystem' }` - Check if static file exists
+- `{ handle: 'resource' }` - Check for built assets
+- `{ handle: 'miss' }` - No match found, continue to fallback
+- `{ handle: 'rewrite' }` - Apply rewrite rules
+- `{ handle: 'hit' }` - Match found, prepare for execution
+- `{ handle: 'error' }` - Error occurred, show error page
+
+These handles provide insertion points for different routing phases.
+
+## Debugging routing
+
+To debug routing configuration:
+
+```bash
+# View all routes in order
+cat .next/output/config.json | jq '.routes'
+
+# Find routes matching a pattern
+cat .next/output/config.json | jq '.routes[] | select(.src | contains("api"))'
+
+# Check middleware routes
+cat .next/output/config.json | jq '.routes[] | select(.middlewarePath)'
+
+# View rewrite headers
+cat .next/output/config.json | jq '.routes[] | select(.headers["x-nextjs-rewritten-path"])'
+```
+
+<Note>
+Understanding the routing configuration helps diagnose issues with redirects, rewrites, and middleware. The generated routes exactly mirror Next.js's routing behavior.
+</Note>

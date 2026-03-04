@@ -1,0 +1,168 @@
+---
+title: Middleware support
+description: Deploy Next.js middleware to the edge with automatic routing configuration
+---
+
+The Vercel adapter provides full support for Next.js middleware, allowing you to run code before requests are completed. Middleware can be deployed to both Edge Runtime and Node.js runtime.
+
+## How middleware works
+
+The adapter detects middleware in your Next.js application and automatically configures it for deployment:
+
+<Steps>
+  <Step title="Middleware detection">
+    The adapter checks for middleware output during the build process:
+    
+    ```typescript
+    const hasMiddleware = Boolean(outputs.middleware);
+    ```
+    
+    Location: `index.ts:43`
+  </Step>
+
+  <Step title="Runtime-specific handling">
+    Middleware is processed based on its runtime configuration:
+    
+    ```typescript
+    if (output.runtime === 'nodejs') {
+      await handleNodeOutputs([output], {
+        ...ctx,
+        isMiddleware: true,
+      });
+    } else if (output.runtime === 'edge') {
+      await handleEdgeOutputs([output], ctx);
+    }
+    ```
+    
+    Location: `outputs.ts:801-810`
+  </Step>
+
+  <Step title="Route generation">
+    The adapter generates routing rules from middleware matchers:
+    
+    ```typescript
+    for (const matcher of output.config.matchers || []) {
+      const route: RouteWithSrc = {
+        continue: true,
+        has: matcher.has,
+        src: matcher.sourceRegex,
+        missing: matcher.missing,
+      };
+      
+      route.middlewarePath = output.pathname;
+      route.middlewareRawSrc = matcher.source ? [matcher.source] : [];
+      route.override = true;
+      routes.push(route);
+    }
+    ```
+    
+    Location: `outputs.ts:814-827`
+  </Step>
+</Steps>
+
+## Edge runtime middleware
+
+When middleware uses the Edge Runtime, it's deployed as an edge function with the following configuration:
+
+```typescript
+const edgeConfig: EdgeFunctionConfig = {
+  runtime: 'edge',
+  name: params.name,
+  entrypoint: path.posix.join(
+    path.posix.relative(repoRoot, projectDir),
+    'index.js'
+  ),
+  filePathMap: files,
+  assets: nonJsAssetFiles,
+  deploymentTarget: 'v8-worker',
+  environment: output.config.env || {},
+  regions: output.config.preferredRegion,
+  framework: {
+    slug: 'nextjs',
+    version: nextVersion,
+  },
+};
+```
+
+Location: `outputs.ts:761-777`
+
+<Note>
+  Edge middleware runs on Vercel's Edge Network, providing low latency globally distributed execution.
+</Note>
+
+## Node.js runtime middleware
+
+Middleware can also run on Node.js runtime with the following handler:
+
+```typescript
+return async function handler(request: Request): Promise<Response> {
+  let middlewareHandler = await require(
+    './' + path.posix.join(relativeDistDir, 'server', 'middleware.js')
+  );
+  middlewareHandler = middlewareHandler.handler || middlewareHandler;
+
+  const context = getRequestContext();
+  const response = await middlewareHandler(request, {
+    waitUntil: context.waitUntil,
+    requestMeta: {
+      relativeProjectDir: '.',
+    },
+  });
+  return response;
+};
+```
+
+Location: `node-handler.ts:43-60`
+
+## Middleware with i18n
+
+The adapter handles middleware in combination with internationalization routing. When middleware is present, special data route handling is enabled:
+
+```typescript
+const shouldHandleMiddlewareDataResolving = routing.shouldNormalizeNextData;
+```
+
+Location: `index.ts:48`
+
+This ensures that `_next/data` requests are properly normalized and denormalized when middleware processes them.
+
+## Middleware route placement
+
+Middleware routes are strategically placed in the routing configuration:
+
+```typescript
+vercelConfig.routes = [
+  ...priorityRedirects,
+  ...normalizeNextDataRoutes(config, buildId, shouldHandleMiddlewareDataResolving, true),
+  ...(config.i18n ? [...i18nRoutes] : []),
+  ...headers,
+  ...redirects,
+  ...middlewareRoutes,  // Middleware routes placed here
+  ...convertedRewrites.beforeFiles,
+  // ... rest of routing
+];
+```
+
+Location: `index.ts:261-430`
+
+<Warning>
+  Middleware runs before file system checks and rewrites, allowing it to intercept and modify requests before they reach your application code.
+</Warning>
+
+## Matcher configuration
+
+Middleware matchers support advanced conditional logic:
+
+- **Source patterns**: Regular expressions to match request paths
+- **Has conditions**: Required headers, cookies, or query parameters
+- **Missing conditions**: Conditions that must not be present
+
+The adapter preserves all matcher configurations from your middleware file and converts them to Vercel routing rules.
+
+## Performance considerations
+
+<Note>
+  - Edge middleware typically has lower cold start times
+  - Node.js middleware can use the full Node.js API
+  - Middleware runs on every request matching the configured matchers
+</Note>

@@ -1,0 +1,432 @@
+---
+title: Pages Router support
+description: Deploy Pages Router applications with API routes and dynamic routing
+---
+
+The Vercel adapter provides full support for Next.js Pages Router, including API routes, dynamic routing, and data fetching methods.
+
+## Pages Router detection
+
+The adapter detects Pages Router usage during the build:
+
+```typescript
+const hasPagesDir = outputs.pages.length > 0 || outputs.pagesApi.length > 0;
+```
+
+Location: `index.ts:47`
+
+## Page outputs
+
+Pages Router outputs are processed based on their runtime:
+
+<Steps>
+  <Step title="Runtime classification">
+    Pages are classified into Node.js and Edge runtime outputs:
+    
+    ```typescript
+    for (const output of [
+      ...outputs.appPages,
+      ...outputs.appRoutes,
+      ...outputs.pages,
+      ...outputs.pagesApi,
+      ...outputs.staticFiles,
+    ]) {
+      if ('runtime' in output) {
+        if (output.runtime === 'nodejs') {
+          nodeOutputsParentMap.set(output.id, output);
+          nodeOutputs.push(output);
+        } else if (output.runtime === 'edge') {
+          edgeOutputs.push(output);
+        }
+      }
+    }
+    ```
+    
+    Location: `index.ts:87-113`
+  </Step>
+
+  <Step title="Function generation">
+    Each page becomes a serverless function with its dependencies:
+    
+    ```typescript
+    const functionDir = path.join(
+      functionsDir,
+      `${normalizeIndexPathname(output.pathname, config)}.func`
+    );
+    await fs.mkdir(functionDir, { recursive: true });
+
+    const files: Record<string, string> = {};
+
+    for (const [relPath, fsPath] of Object.entries(output.assets)) {
+      files[relPath] = path.posix.relative(repoRoot, fsPath);
+    }
+    files[path.posix.relative(repoRoot, output.filePath)] =
+      path.posix.relative(repoRoot, output.filePath);
+    ```
+    
+    Location: `outputs.ts:328-340`
+  </Step>
+</Steps>
+
+## 404 page handling
+
+The adapter includes 404 handlers in page functions for proper error rendering:
+
+```typescript
+if (output.type === AdapterOutputType.PAGES) {
+  const notFoundOutput = pages404Output || pagesErrorOutput;
+
+  if (notFoundOutput) {
+    for (const [relPath, fsPath] of Object.entries(
+      notFoundOutput.assets
+    )) {
+      files[relPath] = path.posix.relative(repoRoot, fsPath);
+    }
+    files[path.posix.relative(repoRoot, notFoundOutput.filePath)] =
+      path.posix.relative(repoRoot, notFoundOutput.filePath);
+  }
+}
+```
+
+Location: `outputs.ts:344-356`
+
+<Note>
+  Each page function includes the 404 or error page to render not-found responses without additional function calls.
+</Note>
+
+## API routes
+
+API routes are processed with specific configuration:
+
+```typescript
+const operationType =
+  output.type === AdapterOutputType.APP_PAGE || AdapterOutputType.PAGES
+    ? 'PAGE'
+    : 'API';
+```
+
+Location: `outputs.ts:380-383`
+
+### Node.js API routes
+
+API routes use the Node.js handler with operation type set to `'API'`:
+
+```typescript
+const nodeConfig: NodeFunctionConfig = {
+  ...vercelConfigOpts,
+  filePathMap: files,
+  operationType,
+  framework: {
+    slug: 'nextjs',
+    version: nextVersion,
+  },
+  handler: path.posix.join(
+    path.posix.relative(repoRoot, projectDir),
+    '___next_launcher.cjs'
+  ),
+  runtime: nodeVersion.runtime,
+  maxDuration,
+  supportsMultiPayloads: true,
+  supportsResponseStreaming: true,
+  experimentalAllowBundling: true,
+  useWebApi: isMiddleware,
+  launcherType: 'Nodejs',
+};
+```
+
+Location: `outputs.ts:405-425`
+
+## Dynamic routes
+
+Dynamic routes are handled through the routing system:
+
+```typescript
+for (const route of routing.dynamicRoutes) {
+  // add route to ensure we 404 for non-existent _next/data
+  // routes before trying page dynamic routes
+  if (hasPagesDir && !hasMiddleware) {
+    if (
+      !route.sourceRegex.includes('_next/data') &&
+      !addedNextData404Route
+    ) {
+      addedNextData404Route = true;
+      dynamicRoutes.push({
+        src: path.posix.join('/', config.basePath || '', '_next/data/(.*)'),
+        dest: path.posix.join('/', config.basePath || '', '404'),
+        status: 404,
+        check: true,
+      });
+    }
+  }
+
+  dynamicRoutes.push({
+    src: route.sourceRegex,
+    dest: route.destination,
+    check: true,
+    has: route.has,
+    missing: route.missing,
+  });
+}
+```
+
+Location: `index.ts:231-259`
+
+<Note>
+  Dynamic routes support `has` and `missing` conditions for advanced pattern matching.
+</Note>
+
+## Data routes
+
+Pages Router data routes (`_next/data`) are handled specially:
+
+```typescript
+if (hasPagesDir && !hasMiddleware) {
+  if (
+    !route.sourceRegex.includes('_next/data') &&
+    !addedNextData404Route
+  ) {
+    addedNextData404Route = true;
+    dynamicRoutes.push({
+      src: path.posix.join('/', config.basePath || '', '_next/data/(.*)'),
+      dest: path.posix.join('/', config.basePath || '', '404'),
+      status: 404,
+      check: true,
+    });
+  }
+}
+```
+
+Location: `index.ts:237-250`
+
+This ensures non-existent data routes return 404 before attempting to match dynamic pages.
+
+## Page request handling
+
+The Node.js handler processes page requests:
+
+```typescript
+return async function handler(
+  req: import('http').IncomingMessage,
+  res: import('http').ServerResponse,
+  internalMetadata: any
+) {
+  try {
+    const parsedUrl = new URL(req.url || '/', 'http://n');
+    const initURL = `https://${req.headers.host || 'localhost'}${parsedUrl.pathname}${parsedUrl.search}`;
+
+    let urlPathname =
+      typeof req.headers['x-matched-path'] === 'string'
+        ? fixMojibake(req.headers['x-matched-path'])
+        : undefined;
+
+    if (typeof urlPathname !== 'string') {
+      urlPathname = parsedUrl.pathname || '/';
+    }
+    
+    const {
+      matchedPathname: page,
+      locale,
+      matches,
+    } = matchUrlToPage(urlPathname);
+    
+    const isAppDir = page.match(/\/(page|route)$/);
+
+    const mod = await require(
+      './' +
+        path.posix.join(
+          relativeDistDir,
+          'server',
+          isAppDir ? 'app' : 'pages',
+          `${page === '/' ? 'index' : page}.js`
+        )
+    );
+
+    await mod.handler(req, res, {
+      waitUntil: getRequestContext().waitUntil,
+      requestMeta: {
+        ...internalMetadata,
+        minimalMode: true,
+        relativeProjectDir: '.',
+        locale,
+        initURL,
+      },
+    });
+  } catch (error) {
+    console.error(`Failed to handle ${req.url}`, error);
+    throw error;
+  }
+};
+```
+
+Location: `node-handler.ts:370-439`
+
+## URL matching
+
+The adapter implements URL matching for Pages Router:
+
+```typescript
+function matchUrlToPage(urlPathname: string): {
+  matchedPathname: string;
+  locale?: string;
+  matches?: RegExpMatchArray | null;
+} {
+  // normalize first
+  urlPathname = normalizeDataPath(urlPathname);
+
+  for (const suffixRegex of [
+    /\.segments(\/.*)\. segment\.rsc$/,
+    /\.rsc$/,
+  ]) {
+    urlPathname = urlPathname.replace(suffixRegex, '');
+  }
+  
+  const urlPathnameWithLocale = urlPathname;
+  const normalizeResult = normalizeLocalePath(
+    urlPathname,
+    i18n?.locales
+  );
+  urlPathname = normalizeResult.pathname;
+  urlPathname = urlPathname.replace(/\/$/, '') || '/';
+
+  const combinedRoutes = [...staticRoutes, ...dynamicRoutes];
+
+  // attempt matching literal page first
+  for (const route of combinedRoutes) {
+    if (route.page === urlPathname) {
+      return {
+        matchedPathname:
+          inversedAppRoutesManifest[route.page] || route.page,
+        locale: normalizeResult.locale,
+      };
+    }
+  }
+
+  // check all routes considering fallback false entries
+  for (const route of [...staticRoutes, ...dynamicRoutes]) {
+    const matches = urlPathname.match(route.namedRegex);
+    if (
+      matches ||
+      (urlPathname === '/index' && route.namedRegex.test('/'))
+    ) {
+      const fallbackFalseMap = prerenderFallbackFalseMap[route.page];
+
+      if (
+        fallbackFalseMap &&
+        !(
+          fallbackFalseMap.includes(urlPathname) ||
+          fallbackFalseMap.includes(urlPathnameWithLocale)
+        )
+      ) {
+        continue;
+      }
+
+      return {
+        matchedPathname:
+          inversedAppRoutesManifest[route.page] || route.page,
+        locale: normalizeResult.locale,
+        matches,
+      };
+    }
+  }
+
+  return {
+    matchedPathname:
+      inversedAppRoutesManifest[urlPathname] || urlPathname,
+    locale: normalizeResult.locale,
+  };
+}
+```
+
+Location: `node-handler.ts:184-256`
+
+## Data path normalization
+
+The adapter normalizes `_next/data` paths:
+
+```typescript
+function normalizeDataPath(pathname: string) {
+  if (!(pathname || '/').startsWith('/_next/data')) {
+    return pathname;
+  }
+  pathname = pathname
+    .replace(/\/_next\/data\/[^/]{1,}/, '')
+    .replace(/\.json$/, '');
+
+  if (pathname === '/index') {
+    return '/';
+  }
+  return pathname;
+}
+```
+
+Location: `node-handler.ts:170-182`
+
+## Routes manifest determinism
+
+The adapter creates a deterministic routes manifest:
+
+```typescript
+async function writeDeterministicRoutesManifest(distDir: string) {
+  const manifest: RoutesManifest = require(
+    path.join(distDir, 'routes-manifest.json')
+  );
+
+  manifest.headers = [];
+  manifest.onMatchHeaders = [];
+  delete manifest.deploymentId;
+
+  const outputManifestPath = path.join(
+    distDir,
+    'routes-manifest-deterministic.json'
+  );
+  await fs.writeFile(outputManifestPath, JSON.stringify(manifest));
+  return outputManifestPath;
+}
+```
+
+Location: `outputs.ts:251-267`
+
+<Note>
+  The deterministic manifest removes headers and deployment ID for consistent function hashing and deduplication.
+</Note>
+
+## Source file resolution
+
+The adapter resolves source files for Pages Router:
+
+```typescript
+for (const pageType of [
+  ...(page === 'middleware' ? [''] : ['pages', 'app']),
+]) {
+  let fsPath = path.join(workPath, pageType, page);
+  if (usesSrcDir) {
+    fsPath = path.join(workPath, 'src', pageType, page);
+  }
+
+  if (fse.existsSync(fsPath)) {
+    return path.relative(workPath, fsPath);
+  }
+  
+  const extensionless = fsPath;
+
+  for (const ext of extensionsToTry) {
+    fsPath = `${extensionless}.${ext}`;
+    if (fse.existsSync(fsPath)) {
+      return path.relative(workPath, fsPath);
+    }
+  }
+
+  if (isDirectory(extensionless)) {
+    if (pageType === 'pages') {
+      for (const ext of extensionsToTry) {
+        fsPath = path.join(extensionless, `index.${ext}`);
+        if (fse.existsSync(fsPath)) {
+          return path.relative(workPath, fsPath);
+        }
+      }
+    }
+  }
+}
+```
+
+Location: `outputs.ts:879-931`

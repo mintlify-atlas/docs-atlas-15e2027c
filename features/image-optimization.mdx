@@ -1,0 +1,327 @@
+---
+title: Image optimization
+description: Configure Next.js Image Optimization with remote patterns and domains
+---
+
+The Vercel adapter automatically configures Next.js Image Optimization for deployment on Vercel's infrastructure.
+
+## Images configuration
+
+The adapter extracts and converts image configuration from your Next.js config:
+
+```typescript
+const vercelConfig: VercelConfig = {
+  version: 3,
+  overrides: {},
+  wildcard: i18nConfig?.domains ? [...] : undefined,
+  images: getImagesConfig(config),
+};
+```
+
+Location: `index.ts:51-66`
+
+## Configuration conversion
+
+The `getImagesConfig` function converts Next.js image config to Vercel format:
+
+<Steps>
+  <Step title="Remote patterns">
+    Remote patterns are converted with regex for hostname and pathname matching:
+    
+    ```typescript
+    const remotePatterns = (images.remotePatterns || []).map((p) => ({
+      protocol: p.protocol?.replace(/:$/, '') as 'http' | 'https' | undefined,
+      hostname: makeRe(p.hostname).source,
+      port: p.port,
+      pathname: makeRe(p.pathname ?? '**', { dot: true }).source,
+      search: p.search,
+    }));
+    ```
+    
+    Location: `utils.ts:7-13`
+  </Step>
+
+  <Step title="Local patterns">
+    Local patterns for restricting local image paths:
+    
+    ```typescript
+    const localPatterns = images.localPatterns?.map((p) => ({
+      pathname: makeRe(p.pathname ?? '**', { dot: true }).source,
+      search: p.search,
+    }));
+    ```
+    
+    Location: `utils.ts:15-18`
+  </Step>
+
+  <Step title="Sizes and formats">
+    Device sizes and image sizes are combined:
+    
+    ```typescript
+    return {
+      localPatterns,
+      remotePatterns,
+      sizes: [...(images.imageSizes || []), ...(images.deviceSizes || [])],
+      domains: images.domains || [],
+      qualities: images.qualities,
+      minimumCacheTTL: images.minimumCacheTTL,
+      formats: images.formats,
+      dangerouslyAllowSVG: images.dangerouslyAllowSVG,
+      contentSecurityPolicy: images.contentSecurityPolicy,
+      contentDispositionType: images.contentDispositionType,
+    };
+    ```
+    
+    Location: `utils.ts:20-32`
+  </Step>
+</Steps>
+
+## Images config type
+
+The full image configuration type:
+
+```typescript
+export type ImagesConfig = {
+  sizes: number[];
+  domains: string[];
+  remotePatterns?: RemotePattern[];
+  localPatterns?: LocalPattern[];
+  qualities?: number[];
+  minimumCacheTTL?: number; // seconds
+  formats?: ImageFormat[];
+  dangerouslyAllowSVG?: boolean;
+  contentSecurityPolicy?: string;
+  contentDispositionType?: string;
+};
+
+type ImageFormat = 'image/avif' | 'image/webp';
+
+type RemotePattern = {
+  protocol?: 'http' | 'https';
+  hostname: string;
+  port?: string;
+  pathname?: string;
+  search?: string;
+};
+
+type LocalPattern = {
+  pathname?: string;
+  search?: string;
+};
+```
+
+Location: `types.ts:1-29`
+
+## Pattern matching with picomatch
+
+The adapter uses picomatch for glob pattern matching:
+
+```typescript
+import { makeRe } from 'picomatch';
+
+const remotePatterns = (images.remotePatterns || []).map((p) => ({
+  protocol: p.protocol?.replace(/:$/, '') as 'http' | 'https' | undefined,
+  hostname: makeRe(p.hostname).source,
+  port: p.port,
+  pathname: makeRe(p.pathname ?? '**', { dot: true }).source,
+  search: p.search,
+}));
+```
+
+Location: `utils.ts:2-13`
+
+<Note>
+  Glob patterns are converted to regular expressions for efficient matching during image optimization requests.
+</Note>
+
+## Remote patterns
+
+Remote patterns allow images from specific domains:
+
+<CodeGroup>
+```typescript Pattern structure
+type RemotePattern = {
+  protocol?: 'http' | 'https';
+  hostname: string;
+  port?: string;
+  pathname?: string;
+  search?: string;
+};
+```
+
+```typescript Example configuration
+{
+  protocol: 'https',
+  hostname: '**.example.com',
+  pathname: '/images/**',
+}
+```
+</CodeGroup>
+
+### Hostname patterns
+
+Hostnames support glob patterns:
+- `example.com` - Exact match
+- `*.example.com` - Single subdomain
+- `**.example.com` - Any subdomain depth
+
+### Pathname patterns
+
+Pathnames use glob syntax:
+- `/images/**` - All paths under /images/
+- `/images/*.jpg` - Only .jpg files in /images/
+- `**` - Match any path (default)
+
+The `dot: true` option ensures dotfiles are matched:
+
+```typescript
+pathname: makeRe(p.pathname ?? '**', { dot: true }).source
+```
+
+Location: `utils.ts:11`
+
+## Local patterns
+
+Local patterns restrict which local images can be optimized:
+
+```typescript
+const localPatterns = images.localPatterns?.map((p) => ({
+  pathname: makeRe(p.pathname ?? '**', { dot: true }).source,
+  search: p.search,
+}));
+```
+
+Location: `utils.ts:15-18`
+
+<Note>
+  If not specified, all local images in the `public` directory are allowed.
+</Note>
+
+## Device and image sizes
+
+The adapter combines both size arrays:
+
+```typescript
+sizes: [...(images.imageSizes || []), ...(images.deviceSizes || [])]
+```
+
+Location: `utils.ts:23`
+
+### Default sizes
+
+Next.js default sizes:
+- **imageSizes**: `[16, 32, 48, 64, 96, 128, 256, 384]`
+- **deviceSizes**: `[640, 750, 828, 1080, 1200, 1920, 2048, 3840]`
+
+## Quality configuration
+
+Custom quality levels for different image formats:
+
+```typescript
+qualities: images.qualities
+```
+
+Location: `utils.ts:25`
+
+<Note>
+  Qualities is an array of numbers (1-100) that Next.js will use for image optimization.
+</Note>
+
+## Cache TTL
+
+Minimum cache time-to-live in seconds:
+
+```typescript
+minimumCacheTTL: images.minimumCacheTTL
+```
+
+Location: `utils.ts:26`
+
+Default is 60 seconds. Optimized images are cached for at least this duration.
+
+## Image formats
+
+Supported output formats:
+
+```typescript
+formats: images.formats
+
+type ImageFormat = 'image/avif' | 'image/webp';
+```
+
+Location: `utils.ts:27` and `types.ts:3`
+
+<Note>
+  Next.js automatically serves the best format supported by the client browser.
+</Note>
+
+## SVG handling
+
+SVG images require explicit opt-in:
+
+```typescript
+dangerouslyAllowSVG: images.dangerouslyAllowSVG,
+contentSecurityPolicy: images.contentSecurityPolicy,
+```
+
+Location: `utils.ts:28-29`
+
+<Warning>
+  SVGs can contain executable code. Use `contentSecurityPolicy` to prevent XSS when enabling SVG optimization.
+</Warning>
+
+### Recommended CSP for SVG
+
+```typescript
+contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;"
+```
+
+This prevents script execution in optimized SVG images.
+
+## Content disposition
+
+Control how images are served:
+
+```typescript
+contentDispositionType: images.contentDispositionType
+```
+
+Location: `utils.ts:30`
+
+Options:
+- `inline` (default) - Display in browser
+- `attachment` - Force download
+
+## Allowed domains (legacy)
+
+Legacy domain allowlist:
+
+```typescript
+domains: images.domains || []
+```
+
+Location: `utils.ts:24`
+
+<Warning>
+  The `domains` config is legacy. Use `remotePatterns` for more precise control over allowed image sources.
+</Warning>
+
+## basePath integration
+
+Image optimization respects the `basePath` setting:
+
+```typescript
+...(config.basePath
+  ? [
+      {
+        src: path.posix.join('/', config.basePath, '_next/image/?'),
+        dest: '/_next/image',
+        check: true,
+      },
+    ]
+  : [])
+```
+
+Location: `index.ts:604-612`
+
+This ensures `/_next/image` requests are rewritten correctly when using a custom base path.

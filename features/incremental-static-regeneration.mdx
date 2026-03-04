@@ -1,0 +1,282 @@
+---
+title: Incremental static regeneration
+description: Configure ISR with revalidation, fallback modes, and on-demand revalidation
+---
+
+The Vercel adapter provides comprehensive support for Incremental Static Regeneration (ISR), enabling pages to be updated after deployment without a full rebuild.
+
+## Prerender output handling
+
+ISR pages are processed through the prerender outputs system:
+
+```typescript
+await handlePrerenderOutputs(outputs.prerenders, {
+  config,
+  hasAppEntries: outputs.appPages.length > 0,
+  varyHeader: routing.rsc.varyHeader,
+  vercelOutputDir,
+  nodeOutputsParentMap,
+  rscContentType: routing.rsc.contentTypeHeader,
+});
+```
+
+Location: `index.ts:198-206`
+
+## Prerender configuration
+
+Each ISR page generates a `.prerender-config.json` file with the following structure:
+
+<Steps>
+  <Step title="Configuration generation">
+    ```typescript
+    const prerenderConfigPath = path.join(
+      functionsDir,
+      `${normalizeIndexPathname(
+        output.pathname,
+        config
+      )}.prerender-config.json`
+    );
+    ```
+    
+    Location: `outputs.ts:464-469`
+  </Step>
+
+  <Step title="Revalidation settings">
+    ```typescript
+    {
+      group: output.groupId,
+      expiration:
+        typeof output.fallback?.initialRevalidate !== 'undefined'
+          ? output.fallback?.initialRevalidate
+          : 1,
+      staleExpiration: output.fallback?.initialExpiration,
+      sourcePath: parentNodeOutput?.pathname,
+      passQuery: true,
+      allowQuery: output.config.allowQuery,
+      allowHeader: output.config.allowHeader,
+      bypassToken: output.config.bypassToken,
+      experimentalBypassFor: output.config.bypassFor,
+      initialHeaders,
+      initialStatus: output.fallback?.initialStatus,
+      fallback: prerenderFallbackPath ? path.posix.relative(...) : null,
+    }
+    ```
+    
+    Location: `outputs.ts:586-627`
+  </Step>
+</Steps>
+
+## Fallback modes
+
+The adapter handles different ISR fallback modes:
+
+### Fallback: true
+
+Pages with fallback enabled generate a fallback file:
+
+```typescript
+const prerenderFallbackPath = fallbackHasFilePath(output.fallback)
+  ? path.join(
+      functionsDir,
+      `${normalizeIndexPathname(
+        output.pathname,
+        config
+      )}.prerender-fallback${path.extname(output.fallback.filePath)}`
+    )
+  : undefined;
+```
+
+Location: `outputs.ts:471-478`
+
+<Note>
+  The fallback file is served while the page is being generated in the background.
+</Note>
+
+### Fallback: false
+
+Pages with `fallback: false` use a special mapping to prevent 404s:
+
+```typescript
+const prerenderFallbackFalseMap: Record<string, string[]> = {};
+
+for (const prerender of outputs.prerenders) {
+  if (
+    prerender.parentFallbackMode === false &&
+    !prerender.pathname.includes('_next/data') &&
+    !prerender.pathname.endsWith('.rsc')
+  ) {
+    const parentOutput = nodeOutputsParentMap.get(prerender.parentOutputId);
+    const parentPage = parentOutput.pathname.substring(
+      config.basePath.length
+    );
+    let currentMap = prerenderFallbackFalseMap[parentPage];
+
+    if (!currentMap) {
+      currentMap = prerenderFallbackFalseMap[parentPage] = [];
+    }
+    currentMap.push(prerender.pathname.substring(config.basePath.length));
+  }
+}
+```
+
+Location: `index.ts:142-169`
+
+<Warning>
+  With `fallback: false`, only pre-generated paths will be accessible. Paths not included during build will return 404.
+</Warning>
+
+## Partial Prerendering (PPR)
+
+The adapter supports Next.js Partial Prerendering with postponed state:
+
+```typescript
+if (
+  output.fallback?.postponedState &&
+  fallbackHasFilePath(output.fallback) &&
+  prerenderFallbackPath
+) {
+  const fallbackContent = await fs.readFile(
+    output.fallback.filePath,
+    'utf8'
+  );
+  await writeIfNotExists(
+    prerenderFallbackPath,
+    `${output.fallback.postponedState}${fallbackContent}`
+  );
+  const originContentType = isRscOutput
+    ? rscContentType
+    : 'text/html; charset=utf-8';
+
+  initialHeaders['content-type'] =
+    `application/x-nextjs-pre-render; state-length=${
+      output.fallback.postponedState.length
+    }; origin=${JSON.stringify(originContentType)}`;
+}
+```
+
+Location: `outputs.ts:544-564`
+
+### PPR chain configuration
+
+PPR outputs include chain configuration:
+
+```typescript
+chain: output.pprChain
+  ? {
+      ...output.pprChain,
+      outputPath: path.posix.join(
+        './',
+        `${normalizeIndexPathname(output.pathname, config)}`
+      ),
+    }
+  : undefined,
+```
+
+Location: `outputs.ts:617-625`
+
+## Function symlinks
+
+ISR pages share the same function code through symlinks:
+
+```typescript
+if (output.pathname !== parentNodeOutput.pathname) {
+  await fs.mkdir(path.dirname(prerenderFunctionDir), {
+    recursive: true,
+  });
+  await fs
+    .symlink(
+      path.relative(
+        path.dirname(prerenderFunctionDir),
+        parentFunctionDir
+      ),
+      prerenderFunctionDir
+    )
+    .catch((err) => {
+      if (!(typeof err === 'object' && err && err.code === 'EEXIST')) {
+        throw err;
+      }
+    });
+}
+```
+
+Location: `outputs.ts:517-535`
+
+<Note>
+  Symlinks reduce deployment size by sharing function code between the dynamic route and its prerendered variants.
+</Note>
+
+## Revalidation configuration
+
+### Time-based revalidation
+
+The `expiration` field controls how long before the page is revalidated:
+
+```typescript
+expiration:
+  typeof output.fallback?.initialRevalidate !== 'undefined'
+    ? output.fallback?.initialRevalidate
+    : 1,
+```
+
+### Stale-while-revalidate
+
+The `staleExpiration` field enables serving stale content:
+
+```typescript
+staleExpiration: output.fallback?.initialExpiration,
+```
+
+### On-demand revalidation
+
+Bypass tokens enable on-demand revalidation:
+
+```typescript
+bypassToken: output.config.bypassToken,
+experimentalBypassFor: output.config.bypassFor,
+```
+
+Location: `outputs.ts:604-605`
+
+## Query and header allowlists
+
+ISR pages can specify which query parameters and headers affect caching:
+
+```typescript
+passQuery: true,
+allowQuery: output.config.allowQuery,
+allowHeader: output.config.allowHeader,
+```
+
+Location: `outputs.ts:599-602`
+
+<Note>
+  - `passQuery: true` sends query parameters to the function
+  - `allowQuery` specifies which query params create cache variants
+  - `allowHeader` specifies which headers create cache variants
+</Note>
+
+## Initial response configuration
+
+Prerendered pages can specify initial response metadata:
+
+```typescript
+initialHeaders,
+initialStatus: output.fallback?.initialStatus,
+```
+
+Location: `outputs.ts:607-608`
+
+## RSC prerendering
+
+App Router RSC routes receive special handling:
+
+```typescript
+const isRscOutput = path.extname(output.pathname) === '.rsc';
+
+initialHeaders['content-type'] =
+  `application/x-nextjs-pre-render; state-length=${
+    output.fallback.postponedState.length
+  }; origin=${JSON.stringify(rscContentType)}`;
+```
+
+Location: `outputs.ts:542-579`

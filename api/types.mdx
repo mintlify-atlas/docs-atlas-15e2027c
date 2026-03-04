@@ -1,0 +1,492 @@
+---
+title: TypeScript types
+description: Type definitions for the Next.js Vercel Adapter
+---
+
+## VercelConfig
+
+The main configuration object for Vercel Build Output API v3.
+
+### Type definition
+
+```typescript
+type VercelConfig = {
+  version: 3;
+  routes?: Route[];
+  images?: ImagesConfig;
+  wildcard?: WildcardConfig;
+  overrides: OverridesConfig;
+  cache?: string[];
+}
+```
+
+### Properties
+
+<ParamField path="version" type="3" required>
+  Build Output API version. Always set to `3`.
+</ParamField>
+
+<ParamField path="routes" type="Route[]">
+  Array of routing rules defining how requests are handled. Includes rewrites, redirects, headers, and function mappings.
+</ParamField>
+
+<ParamField path="images" type="ImagesConfig">
+  Image optimization configuration from Next.js image config.
+</ParamField>
+
+<ParamField path="wildcard" type="WildcardConfig">
+  i18n domain wildcard configuration for locale-specific domains.
+</ParamField>
+
+<ParamField path="overrides" type="OverridesConfig" required>
+  Map of file paths to override configurations for static files.
+</ParamField>
+
+<ParamField path="cache" type="string[]">
+  Array of cache control patterns.
+</ParamField>
+
+### Example
+
+```typescript
+const vercelConfig: VercelConfig = {
+  version: 3,
+  overrides: {},
+  routes: [
+    { handle: 'filesystem' },
+    { src: '^/api/.*', dest: '/api/handler' },
+  ],
+  images: {
+    sizes: [640, 750, 828, 1080, 1200],
+    domains: ['example.com'],
+    formats: ['image/avif', 'image/webp'],
+  },
+};
+```
+
+---
+
+## ImagesConfig
+
+Configuration for Next.js Image Optimization.
+
+### Type definition
+
+```typescript
+type ImagesConfig = {
+  sizes: number[];
+  domains: string[];
+  remotePatterns?: RemotePattern[];
+  localPatterns?: LocalPattern[];
+  qualities?: number[];
+  minimumCacheTTL?: number;
+  formats?: ImageFormat[];
+  dangerouslyAllowSVG?: boolean;
+  contentSecurityPolicy?: string;
+  contentDispositionType?: string;
+}
+```
+
+### Properties
+
+<ParamField path="sizes" type="number[]" required>
+  Array of allowed image widths. Combines `imageSizes` and `deviceSizes` from Next.js config.
+</ParamField>
+
+<ParamField path="domains" type="string[]" required>
+  Allowed domains for remote images.
+</ParamField>
+
+<ParamField path="remotePatterns" type="RemotePattern[]">
+  Pattern-based remote image configuration with regex support.
+  
+  <Expandable title="RemotePattern properties">
+    <ResponseField name="protocol" type="'http' | 'https'">
+      Protocol for remote images
+    </ResponseField>
+    <ResponseField name="hostname" type="string">
+      Hostname pattern (converted to regex)
+    </ResponseField>
+    <ResponseField name="port" type="string">
+      Port number or pattern
+    </ResponseField>
+    <ResponseField name="pathname" type="string">
+      Pathname pattern (converted to regex with dot support)
+    </ResponseField>
+    <ResponseField name="search" type="string">
+      Query string pattern
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="localPatterns" type="LocalPattern[]">
+  Pattern-based local image configuration.
+  
+  <Expandable title="LocalPattern properties">
+    <ResponseField name="pathname" type="string">
+      Pathname pattern (converted to regex)
+    </ResponseField>
+    <ResponseField name="search" type="string">
+      Query string pattern
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="qualities" type="number[]">
+  Allowed quality values for image optimization.
+</ParamField>
+
+<ParamField path="minimumCacheTTL" type="number">
+  Minimum cache TTL in seconds for optimized images.
+</ParamField>
+
+<ParamField path="formats" type="ImageFormat[]">
+  Allowed image formats for optimization.
+  
+  <Expandable title="ImageFormat values">
+    - `'image/avif'`
+    - `'image/webp'`
+  </Expandable>
+</ParamField>
+
+<ParamField path="dangerouslyAllowSVG" type="boolean">
+  Whether to allow SVG image optimization.
+</ParamField>
+
+<ParamField path="contentSecurityPolicy" type="string">
+  Content Security Policy for images.
+</ParamField>
+
+<ParamField path="contentDispositionType" type="string">
+  Content-Disposition header type for images.
+</ParamField>
+
+### Example
+
+```typescript
+const imagesConfig: ImagesConfig = {
+  sizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+  domains: ['example.com', 'cdn.example.com'],
+  remotePatterns: [
+    {
+      protocol: 'https',
+      hostname: '**.example.com',
+      pathname: '/images/**',
+    },
+  ],
+  formats: ['image/avif', 'image/webp'],
+  minimumCacheTTL: 60,
+};
+```
+
+---
+
+## WildcardConfig
+
+Configuration for i18n domain wildcards.
+
+### Type definition
+
+```typescript
+type WildcardConfig = Array<WildCard>
+
+type WildCard = {
+  domain: string;
+  value: string;
+}
+```
+
+### Properties
+
+<ParamField path="domain" type="string" required>
+  The domain name for this locale.
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  The path prefix for the locale. Empty string for default locale.
+</ParamField>
+
+### Example
+
+```typescript
+const wildcardConfig: WildcardConfig = [
+  {
+    domain: 'example.com',
+    value: '', // default locale
+  },
+  {
+    domain: 'example.fr',
+    value: '/fr',
+  },
+];
+```
+
+### Notes
+
+Generated from Next.js `i18n.domains` configuration. The `value` is:
+- Empty string for the default locale
+- `/{locale}` for non-default locales
+
+---
+
+## OverridesConfig
+
+Configuration for static file overrides.
+
+### Type definition
+
+```typescript
+type OverridesConfig = Record<
+  string,
+  { path?: string; contentType?: string }
+>
+```
+
+### Structure
+
+A record mapping file paths to override configurations.
+
+<ParamField path="[key]" type="string" required>
+  The file path to override (e.g., `"./about.html"`).
+</ParamField>
+
+<ParamField path="[key].path" type="string">
+  The URL path to serve the file at (e.g., `"./about"`).
+</ParamField>
+
+<ParamField path="[key].contentType" type="string">
+  The Content-Type header to use (e.g., `"text/html; charset=utf-8"`).
+</ParamField>
+
+### Example
+
+```typescript
+const overrides: OverridesConfig = {
+  './about.html': {
+    path: './about',
+    contentType: 'text/html; charset=utf-8',
+  },
+  './feed.xml': {
+    contentType: 'application/xml',
+  },
+};
+```
+
+### Use case
+
+Primarily used for:
+- Serving HTML files without `.html` extension
+- Setting correct content types for static files
+- Path rewriting for static assets
+
+---
+
+## FuncOutputs
+
+Type representing function outputs from Next.js build.
+
+### Type definition
+
+```typescript
+type FuncOutputs = Array<
+  | AdapterOutput['PAGES']
+  | AdapterOutput['APP_PAGE']
+  | AdapterOutput['APP_ROUTE']
+  | AdapterOutput['PAGES_API']
+  | AdapterOutput['MIDDLEWARE']
+>
+```
+
+### Description
+
+Union type of all possible function output types from the Next.js adapter. Each output includes:
+
+- `pathname`: URL pathname
+- `id`: Unique identifier
+- `filePath`: Path to function entry
+- `assets`: Required asset files
+- `runtime`: "nodejs" or "edge"
+- `sourcePage`: Original page path
+- `config`: Function configuration
+
+### Example usage
+
+```typescript
+const nodeOutputs: FuncOutputs = [];
+const edgeOutputs: FuncOutputs = [];
+
+for (const output of [
+  ...outputs.appPages,
+  ...outputs.appRoutes,
+  ...outputs.pages,
+  ...outputs.pagesApi,
+]) {
+  if ('runtime' in output) {
+    if (output.runtime === 'nodejs') {
+      nodeOutputs.push(output);
+    } else if (output.runtime === 'edge') {
+      edgeOutputs.push(output);
+    }
+  }
+}
+```
+
+---
+
+## NodeFunctionConfig
+
+Configuration for Node.js serverless functions.
+
+### Type definition
+
+```typescript
+type NodeFunctionConfig = Pick<
+  NodejsLambda,
+  | 'memory'
+  | 'maxDuration'
+  | 'experimentalTriggers'
+  | 'supportsCancellation'
+  | 'handler'
+  | 'runtime'
+  | 'regions'
+  | 'allowQuery'
+  | 'framework'
+  | 'operationType'
+  | 'supportsMultiPayloads'
+  | 'supportsResponseStreaming'
+  | 'experimentalAllowBundling'
+> & {
+  filePathMap: Record<string, string>;
+  useWebApi?: boolean;
+  launcherType: 'Nodejs';
+}
+```
+
+### Properties
+
+<ParamField path="filePathMap" type="Record<string, string>" required>
+  Map of required files (relative to repo root).
+</ParamField>
+
+<ParamField path="handler" type="string" required>
+  Path to the function handler file.
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Node.js runtime version (e.g., "nodejs20.x").
+</ParamField>
+
+<ParamField path="operationType" type="'PAGE' | 'API'" required>
+  Type of operation this function performs.
+</ParamField>
+
+<ParamField path="framework" type="{ slug: string; version: string }" required>
+  Framework metadata. For Next.js: `{ slug: 'nextjs', version: '14.1.0' }`.
+</ParamField>
+
+<ParamField path="maxDuration" type="number">
+  Maximum execution duration in seconds.
+</ParamField>
+
+<ParamField path="supportsMultiPayloads" type="boolean">
+  Whether the function supports multiple payloads. Always `true` for Next.js.
+</ParamField>
+
+<ParamField path="supportsResponseStreaming" type="boolean">
+  Whether the function supports streaming responses. Always `true` for Next.js.
+</ParamField>
+
+<ParamField path="experimentalAllowBundling" type="boolean">
+  Whether to allow bundling. Always `true` for Next.js.
+</ParamField>
+
+<ParamField path="useWebApi" type="boolean">
+  Whether to use Web API (Request/Response) instead of Node.js API. `true` for middleware.
+</ParamField>
+
+<ParamField path="launcherType" type="'Nodejs'" required>
+  Launcher type identifier.
+</ParamField>
+
+---
+
+## EdgeFunctionConfig
+
+Configuration for Edge Functions.
+
+### Type definition
+
+```typescript
+type EdgeFunctionConfig = {
+  runtime: 'edge';
+  name: string;
+  entrypoint: string;
+  environment: Record<string, string>;
+  filePathMap: Record<string, string>;
+  assets?: Array<{ name: string; path: string }>;
+  deploymentTarget: string;
+  regions?: 'all' | string | string[];
+  framework?: { slug: string; version: string };
+}
+```
+
+### Properties
+
+<ParamField path="runtime" type="'edge'" required>
+  Runtime identifier for Edge Functions.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Function name.
+</ParamField>
+
+<ParamField path="entrypoint" type="string" required>
+  Path to the function entrypoint.
+</ParamField>
+
+<ParamField path="filePathMap" type="Record<string, string>" required>
+  Map of JavaScript files required by the function.
+</ParamField>
+
+<ParamField path="assets" type="Array<{ name: string; path: string }>">
+  Non-JavaScript assets (WASM, JSON, etc.).
+</ParamField>
+
+<ParamField path="deploymentTarget" type="string" required>
+  Deployment target. Always `"v8-worker"` for Edge Functions.
+</ParamField>
+
+<ParamField path="environment" type="Record<string, string>" required>
+  Environment variables for the function.
+</ParamField>
+
+<ParamField path="regions" type="'all' | string | string[]">
+  Deployment regions for the function.
+</ParamField>
+
+<ParamField path="framework" type="{ slug: string; version: string }">
+  Framework metadata.
+</ParamField>
+
+### Example
+
+```typescript
+const edgeConfig: EdgeFunctionConfig = {
+  runtime: 'edge',
+  name: 'middleware',
+  entrypoint: 'middleware/index.js',
+  filePathMap: {
+    'middleware.js': 'middleware.js',
+  },
+  assets: [
+    { name: 'data.json', path: 'assets/data.json' },
+  ],
+  deploymentTarget: 'v8-worker',
+  environment: {},
+  regions: 'all',
+  framework: {
+    slug: 'nextjs',
+    version: '14.1.0',
+  },
+};
+```

@@ -1,80 +1,204 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with the Next.js Vercel adapter in minutes
 ---
 
-## Get started in three steps
+The Vercel adapter for Next.js enables your Next.js application to be deployed on Vercel's infrastructure. In most cases, this adapter is automatically configured when deploying to Vercel, so no manual setup is required.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  The adapter is automatically configured when you deploy to Vercel. Manual installation is only needed for debugging or advanced use cases.
+</Note>
 
-### Step 1: Set up your local environment
+## Installation
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Install the adapter">
+    Install the latest version of the Vercel adapter using your preferred package manager:
+
+    <CodeGroup>
+      ```bash npm
+      npm i @next-community/adapter-vercel@latest
+      ```
+
+      ```bash yarn
+      yarn add @next-community/adapter-vercel@latest
+      ```
+
+      ```bash pnpm
+      pnpm add @next-community/adapter-vercel@latest
+      ```
+    </CodeGroup>
+
+    <Tip>
+      The adapter requires Next.js version 16.1.1-canary.18 or higher and Node.js 20.6.0 or higher.
+    </Tip>
+  </Step>
+
+  <Step title="Configure Next.js">
+    Add the adapter to your Next.js configuration file:
+
+    <CodeGroup>
+      ```ts next.config.ts
+      import { NextConfig } from 'next'
+
+      const nextConfig: NextConfig = {
+        experimental: {
+          adapterPath: require.resolve('@next-community/adapter-vercel')
+        }
+      }
+
+      export default nextConfig
+      ```
+
+      ```js next.config.js
+      /** @type {import('next').NextConfig} */
+      const nextConfig = {
+        experimental: {
+          adapterPath: require.resolve('@next-community/adapter-vercel')
+        }
+      }
+
+      module.exports = nextConfig
+      ```
+    </CodeGroup>
+
+    <Warning>
+      It is recommended to leave the adapter automatically configured on Vercel to receive automatic fixes and updates. Only configure it manually if you need to debug deployment issues locally.
+    </Warning>
+  </Step>
+
+  <Step title="Build your application">
+    Run the Next.js build command to generate the Vercel output:
+
+    ```bash
+    npm run build
+    ```
+
+    The adapter will create a `.next/output` directory containing the Vercel deployment configuration and optimized build artifacts.
+
+    <Tip>
+      The output directory includes a `config.json` file with routing rules, middleware configuration, and function definitions optimized for Vercel's edge network.
+    </Tip>
+  </Step>
+</Steps>
+
+## What happens during the build
+
+When you build your Next.js application with the Vercel adapter, it performs several optimizations:
+
+<Steps>
+  <Step title="Output generation">
+    The adapter processes your Next.js build output and generates Vercel-specific deployment artifacts in `.next/output/`:
+
+    ```typescript
+    const vercelOutputDir = path.join(distDir, 'output');
+    await fs.mkdir(vercelOutputDir, { recursive: true });
+    ```
+  </Step>
+
+  <Step title="Function creation">
+    Server-side routes are converted into Vercel Functions based on their runtime:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    - **Node.js runtime** for standard server components and API routes
+    - **Edge runtime** for middleware and edge functions
+
+    The adapter automatically detects which runtime to use:
+
+    ```typescript
+    if (output.runtime === 'nodejs') {
+      nodeOutputs.push(output);
+    } else if (output.runtime === 'edge') {
+      edgeOutputs.push(output);
+    }
+    ```
+  </Step>
+
+  <Step title="Static file optimization">
+    Static assets from the `public/` directory and statically generated pages are optimized for Vercel's CDN:
+
+    ```typescript
+    await handlePublicFiles(
+      path.join(projectDir, 'public'),
+      vercelOutputDir,
+      config
+    );
+    await handleStaticOutputs(outputs.staticFiles, {
+      config,
+      vercelConfig,
+      vercelOutputDir,
+    });
+    ```
+  </Step>
+
+  <Step title="Routing configuration">
+    The adapter generates a comprehensive routing configuration (`config.json`) that handles:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    - Dynamic routes and rewrites
+    - Middleware routing
+    - Internationalization (i18n)
+    - Headers and redirects
+    - 404 and 500 error pages
 
-### Step 2: Deploy your changes
+    The configuration is written to the output directory:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```typescript
+    const outputConfigPath = path.join(vercelOutputDir, 'config.json');
+    await fs.writeFile(outputConfigPath, JSON.stringify(vercelConfig, null, 2));
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Verifying the build
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+After building, you can verify the adapter output:
 
-### Step 3: Go live
+```bash
+ls -la .next/output
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+You should see a directory structure similar to this:
+
+```
+.next/output/
+├── config.json          # Routing and deployment configuration
+├── functions/           # Serverless and edge functions
+│   ├── index.func/      # Function for the home page
+│   └── api/             # API route functions
+└── static/              # Static assets and prerendered pages
+    ├── _next/           # Next.js static assets
+    └── index.html       # Prerendered pages (if any)
+```
+
+The `config.json` file contains the Vercel configuration:
+
+```json
+{
+  "version": 3,
+  "routes": [...],
+  "images": {...},
+  "overrides": {}
+}
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Next.js configuration" icon="gear" href="/configuration/next-config">
+    Learn about advanced configuration options for the adapter
+  </Card>
+  <Card title="How it works" icon="sitemap" href="/concepts/how-it-works">
+    Understand the adapter architecture and build process
+  </Card>
 </CardGroup>
 
+## Requirements
+
+Before using the adapter, ensure your project meets these requirements:
+
+- **Next.js**: >= 16.1.1-canary.18
+- **Node.js**: >= 20.6.0
+- **Package type**: CommonJS (type: "commonjs")
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  The adapter is currently in beta (version 0.0.1-beta.12). While it's production-ready for Vercel deployments, the API may change in future releases.
 </Note>

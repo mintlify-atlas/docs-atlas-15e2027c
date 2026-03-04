@@ -1,0 +1,481 @@
+---
+title: Output handlers
+description: Functions for processing Next.js build outputs into Vercel deployment format
+---
+
+## handlePublicFiles
+
+Copies files from the `public` directory to the Vercel output static directory.
+
+### Signature
+
+```typescript
+async function handlePublicFiles(
+  publicFolder: string,
+  vercelOutputDir: string,
+  config: NextConfig
+): Promise<void>
+```
+
+### Parameters
+
+<ParamField path="publicFolder" type="string" required>
+  Absolute path to the Next.js `public` folder.
+</ParamField>
+
+<ParamField path="vercelOutputDir" type="string" required>
+  Absolute path to the Vercel output directory (e.g., `.next/output`).
+</ParamField>
+
+<ParamField path="config" type="NextConfig" required>
+  Next.js configuration object, used to apply `basePath` to static files.
+</ParamField>
+
+### Behavior
+
+- Reads top-level items from the public folder
+- Copies each item to `{vercelOutputDir}/static/{basePath}/{item}`
+- Uses a semaphore to limit concurrent file operations to 16
+- Silently continues if the public folder doesn't exist
+
+---
+
+## handleStaticOutputs
+
+Processes static file outputs (HTML, assets) from the Next.js build.
+
+### Signature
+
+```typescript
+async function handleStaticOutputs(
+  outputs: Array<AdapterOutput['STATIC_FILE']>,
+  {
+    config,
+    vercelConfig,
+    vercelOutputDir,
+  }: {
+    config: NextConfig;
+    vercelConfig: VercelConfig;
+    vercelOutputDir: string;
+  }
+): Promise<void>
+```
+
+### Parameters
+
+<ParamField path="outputs" type="Array<AdapterOutput['STATIC_FILE']>" required>
+  Array of static file outputs from Next.js build.
+  
+  <Expandable title="output properties">
+    <ResponseField name="pathname" type="string">
+      URL pathname for the output (e.g., "/about")
+    </ResponseField>
+    <ResponseField name="filePath" type="string">
+      Absolute path to the source file
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="config" type="NextConfig" required>
+  Next.js configuration object.
+</ParamField>
+
+<ParamField path="vercelConfig" type="VercelConfig" required>
+  Vercel configuration object to modify with overrides.
+</ParamField>
+
+<ParamField path="vercelOutputDir" type="string" required>
+  Absolute path to the Vercel output directory.
+</ParamField>
+
+### Behavior
+
+- Copies static files to the output directory
+- For HTML files: adds content-type override and path without extension
+- Creates a `not-found.txt` file for 404 responses on `_next/static` resources
+- Uses a semaphore to limit concurrent operations
+
+### Example
+
+```typescript
+await handleStaticOutputs(outputs.staticFiles, {
+  config,
+  vercelConfig,
+  vercelOutputDir,
+});
+
+// Creates:
+// - .next/output/static/about.html -> served at /about
+// - Adds to vercelConfig.overrides:
+//   { "./about.html": { contentType: "text/html; charset=utf-8", path: "./about" } }
+```
+
+---
+
+## handleNodeOutputs
+
+Processes Node.js runtime outputs (pages, API routes) into serverless functions.
+
+### Signature
+
+```typescript
+async function handleNodeOutputs(
+  nodeOutputs: FuncOutputs,
+  {
+    config,
+    distDir,
+    repoRoot,
+    projectDir,
+    nextVersion,
+    isMiddleware,
+    prerenderFallbackFalseMap,
+    vercelOutputDir,
+  }: {
+    config: NextConfig;
+    distDir: string;
+    repoRoot: string;
+    projectDir: string;
+    nextVersion: string;
+    isMiddleware?: boolean;
+    prerenderFallbackFalseMap: Record<string, string[]>;
+    vercelOutputDir: string;
+  }
+): Promise<void>
+```
+
+### Parameters
+
+<ParamField path="nodeOutputs" type="FuncOutputs" required>
+  Array of Node.js function outputs. Can include pages, API routes, app pages, and app routes.
+  
+  <Expandable title="output properties">
+    <ResponseField name="pathname" type="string">
+      URL pathname for the function
+    </ResponseField>
+    <ResponseField name="id" type="string">
+      Unique identifier for the output
+    </ResponseField>
+    <ResponseField name="filePath" type="string">
+      Path to the function entry file
+    </ResponseField>
+    <ResponseField name="assets" type="Record<string, string>">
+      Map of asset paths required by the function
+    </ResponseField>
+    <ResponseField name="runtime" type="'nodejs'">
+      Runtime identifier
+    </ResponseField>
+    <ResponseField name="sourcePage" type="string">
+      Original page path for finding source file
+    </ResponseField>
+    <ResponseField name="config" type="object">
+      Function configuration including maxDuration
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="config" type="NextConfig" required>
+  Next.js configuration object.
+</ParamField>
+
+<ParamField path="distDir" type="string" required>
+  Absolute path to the `.next` directory.
+</ParamField>
+
+<ParamField path="repoRoot" type="string" required>
+  Absolute path to repository root.
+</ParamField>
+
+<ParamField path="projectDir" type="string" required>
+  Absolute path to Next.js project directory.
+</ParamField>
+
+<ParamField path="nextVersion" type="string" required>
+  Next.js version string.
+</ParamField>
+
+<ParamField path="isMiddleware" type="boolean">
+  Whether this is middleware (uses Web API instead of Node.js API).
+</ParamField>
+
+<ParamField path="prerenderFallbackFalseMap" type="Record<string, string[]>" required>
+  Map of prerender paths with `fallback: false`.
+</ParamField>
+
+<ParamField path="vercelOutputDir" type="string" required>
+  Absolute path to Vercel output directory.
+</ParamField>
+
+### Behavior
+
+1. Creates a `.func` directory for each function
+2. Generates a launcher file (`___next_launcher.cjs`)
+3. Creates a `.vc-config.json` with function configuration
+4. Includes 404/error handlers in function assets
+5. Supports workflow step and workflow configurations
+6. Handles deterministic routes manifest
+
+### Function configuration
+
+The generated `.vc-config.json` includes:
+
+- `runtime`: Node.js runtime version
+- `handler`: Path to launcher file
+- `filePathMap`: All required files
+- `maxDuration`: Execution timeout
+- `operationType`: "PAGE" or "API"
+- `framework`: `{ slug: "nextjs", version: "..." }`
+- `supportsResponseStreaming`: true
+- `useWebApi`: true for middleware
+
+---
+
+## handleEdgeOutputs
+
+Processes Edge runtime outputs into Edge Functions.
+
+### Signature
+
+```typescript
+async function handleEdgeOutputs(
+  edgeOutputs: FuncOutputs,
+  {
+    config,
+    distDir,
+    repoRoot,
+    projectDir,
+    nextVersion,
+    vercelOutputDir,
+  }: {
+    distDir: string;
+    config: NextConfig;
+    repoRoot: string;
+    projectDir: string;
+    nextVersion: string;
+    vercelOutputDir: string;
+  }
+): Promise<void>
+```
+
+### Parameters
+
+Similar to `handleNodeOutputs`, but for Edge runtime outputs.
+
+<ParamField path="edgeOutputs" type="FuncOutputs" required>
+  Array of Edge runtime outputs.
+  
+  <Expandable title="additional properties">
+    <ResponseField name="runtime" type="'edge'">
+      Edge runtime identifier
+    </ResponseField>
+    <ResponseField name="wasmAssets" type="Record<string, string>">
+      WebAssembly module paths
+    </ResponseField>
+    <ResponseField name="config.env" type="Record<string, string>">
+      Environment variables
+    </ResponseField>
+    <ResponseField name="config.preferredRegion" type="string | string[] | 'all'">
+      Deployment regions
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Behavior
+
+1. Separates JavaScript and non-JavaScript assets
+2. Generates Edge Function wrapper source
+3. Handles WASM assets
+4. Creates `index.js` entry point
+5. Creates `.vc-config.json` with Edge Function configuration
+
+### Edge function configuration
+
+The generated `.vc-config.json` includes:
+
+- `runtime`: "edge"
+- `entrypoint`: Path to index.js
+- `filePathMap`: JS files
+- `assets`: Non-JS files
+- `deploymentTarget`: "v8-worker"
+- `environment`: Environment variables
+- `regions`: Deployment regions
+
+---
+
+## handlePrerenderOutputs
+
+Processes prerendered outputs for ISR and SSG pages.
+
+### Signature
+
+```typescript
+async function handlePrerenderOutputs(
+  prerenderOutputs: Array<AdapterOutput['PRERENDER']>,
+  {
+    config,
+    hasAppEntries,
+    vercelOutputDir,
+    nodeOutputsParentMap,
+    rscContentType,
+    varyHeader,
+  }: {
+    hasAppEntries?: boolean;
+    config: NextConfig;
+    vercelOutputDir: string;
+    nodeOutputsParentMap: Map<string, FuncOutputs[0]>;
+    rscContentType: string;
+    varyHeader: string;
+  }
+): Promise<void>
+```
+
+### Parameters
+
+<ParamField path="prerenderOutputs" type="Array<AdapterOutput['PRERENDER']>" required>
+  Array of prerender outputs.
+  
+  <Expandable title="output properties">
+    <ResponseField name="pathname" type="string">
+      URL pathname
+    </ResponseField>
+    <ResponseField name="parentOutputId" type="string">
+      ID of the parent function
+    </ResponseField>
+    <ResponseField name="groupId" type="string">
+      Revalidation group identifier
+    </ResponseField>
+    <ResponseField name="fallback" type="object">
+      Fallback configuration with filePath, postponedState, initialHeaders, initialRevalidate, initialExpiration, initialStatus
+    </ResponseField>
+    <ResponseField name="config" type="object">
+      Prerender configuration with allowQuery, allowHeader, bypassToken, bypassFor
+    </ResponseField>
+    <ResponseField name="pprChain" type="object">
+      PPR (Partial Prerendering) chain configuration
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="hasAppEntries" type="boolean">
+  Whether the build includes App Router entries.
+</ParamField>
+
+<ParamField path="nodeOutputsParentMap" type="Map<string, FuncOutputs[0]>" required>
+  Map of parent function outputs by ID.
+</ParamField>
+
+<ParamField path="rscContentType" type="string" required>
+  Content-Type header for RSC responses.
+</ParamField>
+
+<ParamField path="varyHeader" type="string" required>
+  Vary header value for App Router.
+</ParamField>
+
+### Behavior
+
+1. Creates symbolic links from prerender paths to parent functions
+2. Generates `.prerender-config.json` files with ISR configuration
+3. Handles fallback files with postponed state for PPR
+4. Sets proper content-type headers for RSC and HTML
+5. Configures revalidation and bypass tokens
+
+### Prerender configuration
+
+The generated `.prerender-config.json` includes:
+
+- `group`: Revalidation group ID
+- `expiration`: Revalidate time in seconds
+- `staleExpiration`: Stale-while-revalidate time
+- `sourcePath`: Path to parent function
+- `passQuery`: true
+- `allowQuery`: Allowed query parameters
+- `allowHeader`: Allowed headers for cache variance
+- `bypassToken`: ISR bypass token
+- `experimentalBypassFor`: Bypass configuration
+- `initialHeaders`: Headers from fallback
+- `initialStatus`: Status code from fallback
+- `fallback`: Path to fallback file
+- `chain`: PPR chain configuration
+
+---
+
+## handleMiddleware
+
+Processes middleware output and generates middleware routes.
+
+### Signature
+
+```typescript
+async function handleMiddleware(
+  output: AdapterOutput['MIDDLEWARE'],
+  ctx: {
+    config: NextConfig;
+    nextVersion: string;
+    distDir: string;
+    repoRoot: string;
+    projectDir: string;
+    vercelOutputDir: string;
+    prerenderFallbackFalseMap: Record<string, string[]>;
+  }
+): Promise<RouteWithSrc[]>
+```
+
+### Parameters
+
+<ParamField path="output" type="AdapterOutput['MIDDLEWARE']" required>
+  Middleware output with runtime and matcher configuration.
+  
+  <Expandable title="properties">
+    <ResponseField name="runtime" type="'nodejs' | 'edge'">
+      Middleware runtime
+    </ResponseField>
+    <ResponseField name="pathname" type="string">
+      Middleware path
+    </ResponseField>
+    <ResponseField name="config.matchers" type="array">
+      Array of matcher objects with sourceRegex, source, has, missing
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Return value
+
+Returns an array of middleware routes. Each route includes:
+
+- `src`: Source regex from matcher
+- `has`/`missing`: Conditions
+- `middlewarePath`: Path to middleware function
+- `middlewareRawSrc`: Original source patterns
+- `continue: true`
+- `override: true`
+
+### Behavior
+
+1. Delegates to `handleNodeOutputs` or `handleEdgeOutputs` based on runtime
+2. Generates routes for each matcher in the middleware config
+3. Routes include middleware path for execution
+
+### Example
+
+```typescript
+const middlewareRoutes = await handleMiddleware(outputs.middleware, {
+  config,
+  nextVersion,
+  distDir,
+  repoRoot,
+  projectDir,
+  vercelOutputDir,
+  prerenderFallbackFalseMap,
+});
+
+// Result:
+// [
+//   {
+//     src: '^/api/.*',
+//     middlewarePath: '/middleware',
+//     middlewareRawSrc: ['/api/:path*'],
+//     continue: true,
+//     override: true
+//   }
+// ]
+```

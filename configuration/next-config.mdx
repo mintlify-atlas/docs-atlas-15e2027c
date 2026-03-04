@@ -1,0 +1,213 @@
+---
+title: Next.js configuration
+description: Configure the Next.js Vercel Adapter through Next.js configuration options
+---
+
+The Vercel adapter integrates with Next.js configuration options to generate the appropriate deployment outputs. Understanding these options helps you optimize your Vercel deployments.
+
+## Adapter configuration
+
+Configure the adapter in the `experimental` section of your Next.js config.
+
+<ParamField path="experimental.adapterPath" type="string" required>
+  Path to the adapter package. Use `require.resolve('@next-community/adapter-vercel')` to automatically resolve the installed package path.
+</ParamField>
+
+<CodeGroup>
+
+```ts next.config.ts
+import { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    adapterPath: require.resolve('@next-community/adapter-vercel')
+  }
+}
+
+export default nextConfig
+```
+
+```js next.config.js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  experimental: {
+    adapterPath: require.resolve('@next-community/adapter-vercel')
+  }
+}
+
+module.exports = nextConfig
+```
+
+</CodeGroup>
+
+## Image optimization
+
+The adapter automatically configures Vercel's image optimization based on your Next.js image configuration.
+
+### Image sizes
+
+<ParamField path="images.imageSizes" type="number[]">
+  Array of image widths for responsive images. Combined with `deviceSizes` to generate the full set of optimized image sizes.
+</ParamField>
+
+<ParamField path="images.deviceSizes" type="number[]">
+  Array of device widths for responsive images. Combined with `imageSizes` to generate the full set of optimized image sizes.
+</ParamField>
+
+### Image domains and patterns
+
+<ParamField path="images.domains" type="string[]">
+  Array of allowed external domains for image optimization. For more control, use `remotePatterns` instead.
+</ParamField>
+
+<ParamField path="images.remotePatterns" type="object[]">
+  Array of remote URL patterns allowed for image optimization.
+  
+  Each pattern can specify:
+  - `protocol`: `'http'` or `'https'` (optional)
+  - `hostname`: Domain name (supports wildcards)
+  - `port`: Port number (optional)
+  - `pathname`: URL path pattern (optional)
+  - `search`: Query string pattern (optional)
+</ParamField>
+
+<ParamField path="images.localPatterns" type="object[]">
+  Array of local file patterns allowed for image optimization.
+  
+  Each pattern can specify:
+  - `pathname`: File path pattern (optional)
+  - `search`: Query string pattern (optional)
+</ParamField>
+
+### Image quality and formats
+
+<ParamField path="images.qualities" type="number[]">
+  Array of quality values for image optimization. Values should be between 1 and 100.
+</ParamField>
+
+<ParamField path="images.formats" type="string[]">
+  Array of supported image formats. Supported values: `'image/avif'`, `'image/webp'`
+</ParamField>
+
+### Image caching and security
+
+<ParamField path="images.minimumCacheTTL" type="number">
+  Minimum cache TTL in seconds for optimized images.
+</ParamField>
+
+<ParamField path="images.dangerouslyAllowSVG" type="boolean">
+  Allow SVG images to be optimized. Use with caution as SVG files can contain scripts.
+</ParamField>
+
+<ParamField path="images.contentSecurityPolicy" type="string">
+  Content Security Policy header for image responses.
+</ParamField>
+
+<ParamField path="images.contentDispositionType" type="string">
+  Content-Disposition header type for image responses.
+</ParamField>
+
+### Example configuration
+
+```ts next.config.ts
+import { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    adapterPath: require.resolve('@next-community/adapter-vercel')
+  },
+  images: {
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'images.example.com',
+        pathname: '/uploads/**',
+      },
+    ],
+    formats: ['image/avif', 'image/webp'],
+    minimumCacheTTL: 60,
+  },
+}
+
+export default nextConfig
+```
+
+## Internationalization
+
+The adapter supports Next.js i18n configuration and automatically generates locale-specific routes.
+
+<ParamField path="i18n.locales" type="string[]">
+  Array of all supported locales.
+</ParamField>
+
+<ParamField path="i18n.defaultLocale" type="string">
+  Default locale for the application.
+</ParamField>
+
+<ParamField path="i18n.domains" type="object[]">
+  Array of domain-specific locale configurations.
+  
+  Each domain can specify:
+  - `domain`: Domain name
+  - `defaultLocale`: Default locale for this domain
+  - `locales`: Supported locales for this domain (optional)
+  - `http`: Use HTTP instead of HTTPS (optional)
+</ParamField>
+
+<ParamField path="i18n.localeDetection" type="boolean">
+  Enable automatic locale detection based on Accept-Language header.
+</ParamField>
+
+### Example i18n configuration
+
+```ts next.config.ts
+import { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    adapterPath: require.resolve('@next-community/adapter-vercel')
+  },
+  i18n: {
+    locales: ['en', 'fr', 'de'],
+    defaultLocale: 'en',
+    domains: [
+      {
+        domain: 'example.com',
+        defaultLocale: 'en',
+      },
+      {
+        domain: 'example.fr',
+        defaultLocale: 'fr',
+      },
+    ],
+  },
+}
+
+export default nextConfig
+```
+
+## Base path and trailing slash
+
+<ParamField path="basePath" type="string">
+  Base path for the application. All routes will be prefixed with this path.
+</ParamField>
+
+<ParamField path="trailingSlash" type="boolean">
+  Add trailing slashes to URLs.
+</ParamField>
+
+```ts next.config.ts
+import { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    adapterPath: require.resolve('@next-community/adapter-vercel')
+  },
+  basePath: '/docs',
+  trailingSlash: true,
+}
+
+export default nextConfig
+```

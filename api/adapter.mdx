@@ -1,0 +1,172 @@
+---
+title: NextAdapter interface
+description: Core adapter interface and onBuildComplete hook for Next.js Vercel deployment
+---
+
+## NextAdapter
+
+The `NextAdapter` interface defines the contract for adapting Next.js builds to the Vercel platform.
+
+### Properties
+
+<ParamField path="name" type="string" required>
+  The name of the adapter. For the Vercel adapter, this is set to `"Vercel"`.
+</ParamField>
+
+<ParamField path="onBuildComplete" type="function" required>
+  Async function called when the Next.js build is complete. Transforms build outputs into Vercel deployment format.
+</ParamField>
+
+## onBuildComplete
+
+The `onBuildComplete` hook is the core function that transforms Next.js build outputs into the Vercel Build Output API format.
+
+### Parameters
+
+The function receives a single configuration object with the following properties:
+
+<ParamField path="routing" type="object" required>
+  Routing configuration from Next.js build including rewrites, redirects, headers, and dynamic routes.
+  
+  <Expandable title="properties">
+    <ResponseField name="beforeFiles" type="AdapterRoute[]">
+      Routes processed before checking the filesystem
+    </ResponseField>
+    <ResponseField name="afterFiles" type="AdapterRoute[]">
+      Routes processed after checking the filesystem
+    </ResponseField>
+    <ResponseField name="fallback" type="AdapterRoute[]">
+      Fallback routes when no match is found
+    </ResponseField>
+    <ResponseField name="beforeMiddleware" type="AdapterRoute[]">
+      Routes processed before middleware
+    </ResponseField>
+    <ResponseField name="dynamicRoutes" type="array">
+      Array of dynamic route configurations with `sourceRegex`, `destination`, `has`, and `missing` properties
+    </ResponseField>
+    <ResponseField name="onMatch" type="AdapterRoute[]">
+      Routes that execute when a match is found
+    </ResponseField>
+    <ResponseField name="shouldNormalizeNextData" type="boolean">
+      Whether to handle middleware data resolving
+    </ResponseField>
+    <ResponseField name="rsc" type="object">
+      React Server Component configuration including headers and prefetch settings
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="config" type="NextConfig" required>
+  Next.js configuration object including basePath, i18n, images, and other settings.
+</ParamField>
+
+<ParamField path="buildId" type="string" required>
+  Unique identifier for the current build.
+</ParamField>
+
+<ParamField path="outputs" type="object" required>
+  Collection of all build outputs categorized by type.
+  
+  <Expandable title="properties">
+    <ResponseField name="appPages" type="array">
+      App Router pages with runtime and configuration
+    </ResponseField>
+    <ResponseField name="appRoutes" type="array">
+      App Router API routes
+    </ResponseField>
+    <ResponseField name="pages" type="array">
+      Pages Router pages
+    </ResponseField>
+    <ResponseField name="pagesApi" type="array">
+      Pages Router API routes
+    </ResponseField>
+    <ResponseField name="staticFiles" type="array">
+      Static HTML and asset files
+    </ResponseField>
+    <ResponseField name="middleware" type="object">
+      Middleware configuration if present
+    </ResponseField>
+    <ResponseField name="prerenders" type="array">
+      Prerendered pages with ISR configuration
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="distDir" type="string" required>
+  Absolute path to the `.next` build directory.
+</ParamField>
+
+<ParamField path="repoRoot" type="string" required>
+  Absolute path to the repository root directory.
+</ParamField>
+
+<ParamField path="projectDir" type="string" required>
+  Absolute path to the Next.js project directory.
+</ParamField>
+
+<ParamField path="nextVersion" type="string" required>
+  Version string of Next.js being used (e.g., "14.1.0").
+</ParamField>
+
+### Return value
+
+Returns a `Promise<void>` that resolves when all build outputs have been processed and written to the Vercel output directory.
+
+### Behavior
+
+The `onBuildComplete` hook performs the following operations:
+
+1. Creates the Vercel output directory at `{distDir}/output`
+2. Processes public files and static outputs
+3. Handles Edge Functions and Node.js functions
+4. Processes middleware if present
+5. Handles prerender outputs for ISR/SSG pages
+6. Generates the routing configuration
+7. Writes the final `config.json` file
+
+<CodeGroup>
+```typescript Example usage
+import type { NextAdapter } from 'next';
+
+const myAdapter: NextAdapter = {
+  name: 'Vercel',
+  async onBuildComplete({
+    routing,
+    config,
+    buildId,
+    outputs,
+    distDir,
+    repoRoot,
+    projectDir,
+    nextVersion,
+  }) {
+    // Transform Next.js build outputs to Vercel format
+    const vercelOutputDir = path.join(distDir, 'output');
+    await fs.mkdir(vercelOutputDir, { recursive: true });
+    
+    // Process outputs...
+  },
+};
+
+export = myAdapter;
+```
+
+```typescript Output structure
+// The adapter creates this directory structure:
+// .next/output/
+// ├── config.json           (routing and configuration)
+// ├── static/               (static files and assets)
+// └── functions/            (serverless functions)
+//     ├── index.func/
+//     ├── api/route.func/
+//     └── [...].prerender-config.json
+```
+</CodeGroup>
+
+### Notes
+
+- The adapter handles both Node.js and Edge runtime outputs
+- Middleware is supported for both runtimes
+- Static files are optimized with content-type overrides
+- i18n configuration is transformed into Vercel wildcard routing
+- The adapter preserves ISR and PPR (Partial Prerendering) configurations

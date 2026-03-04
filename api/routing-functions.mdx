@@ -1,0 +1,332 @@
+---
+title: Routing functions
+description: Utility functions for transforming Next.js routing configuration to Vercel format
+---
+
+## normalizeRewrites
+
+Filters and normalizes rewrite routes from Next.js routing phases into Vercel route format.
+
+### Signature
+
+```typescript
+function normalizeRewrites(routing: {
+  beforeFiles: AdapterRoute[];
+  afterFiles: AdapterRoute[];
+  fallback: AdapterRoute[];
+}): {
+  beforeFiles: RouteWithSrc[];
+  afterFiles: RouteWithSrc[];
+  fallback: RouteWithSrc[];
+}
+```
+
+### Parameters
+
+<ParamField path="routing" type="object" required>
+  Object containing rewrite routes from three phases.
+  
+  <Expandable title="properties">
+    <ResponseField name="beforeFiles" type="AdapterRoute[]">
+      Rewrites processed before checking the filesystem
+    </ResponseField>
+    <ResponseField name="afterFiles" type="AdapterRoute[]">
+      Rewrites processed after checking the filesystem
+    </ResponseField>
+    <ResponseField name="fallback" type="AdapterRoute[]">
+      Fallback rewrites when no match is found
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Return value
+
+Returns an object with the same structure, but with routes normalized to Vercel format:
+
+- `beforeFiles`: Routes with `continue: true` and `override: true` (no `check` property)
+- `afterFiles`: Routes with `check: true`
+- `fallback`: Routes with `check: true`
+
+### Example
+
+```typescript
+const convertedRewrites = normalizeRewrites(routing);
+
+// convertedRewrites.beforeFiles[0]:
+// {
+//   src: '^/blog/(.*)$',
+//   dest: '/posts/$1',
+//   continue: true,
+//   override: true
+// }
+```
+
+---
+
+## modifyWithRewriteHeaders
+
+Modifies rewrite routes by adding `x-nextjs-rewritten-path` and `x-nextjs-rewritten-query` headers. Also handles RSC suffix modifications for App Router.
+
+### Signature
+
+```typescript
+function modifyWithRewriteHeaders(
+  rewrites: RouteWithSrc[],
+  {
+    isAfterFilesRewrite = false,
+    shouldHandleSegmentPrefetches,
+  }: {
+    isAfterFilesRewrite?: boolean;
+    shouldHandleSegmentPrefetches?: boolean;
+  }
+): void
+```
+
+### Parameters
+
+<ParamField path="rewrites" type="RouteWithSrc[]" required>
+  Array of rewrite routes to modify in place.
+</ParamField>
+
+<ParamField path="isAfterFilesRewrite" type="boolean" default="false">
+  Whether these are afterFiles rewrites. When true, adds RSC suffix handling.
+</ParamField>
+
+<ParamField path="shouldHandleSegmentPrefetches" type="boolean">
+  Whether to handle segment prefetches for PPR (Partial Prerendering).
+</ParamField>
+
+### Behavior
+
+This function mutates the `rewrites` array by:
+
+1. Adding rewrite headers to track the original destination
+2. For `afterFiles` rewrites with App Router: modifies `src` regex to match RSC suffixes
+3. Skips external rewrites (those with `http://` or `https://` protocol)
+4. Filters out Next.js internal query params (`nxtP*`, `nxtI*`)
+
+### Example
+
+```typescript
+const rewrites = [
+  {
+    src: '^/api/(.*)$',
+    dest: '/external-api/$1?param=value',
+  },
+];
+
+modifyWithRewriteHeaders(rewrites, {
+  shouldHandleSegmentPrefetches: true,
+});
+
+// Result:
+// {
+//   src: '^/api/(.*)$',
+//   dest: '/external-api/$1?param=value',
+//   headers: {
+//     'x-nextjs-rewritten-path': '/external-api/$1',
+//     'x-nextjs-rewritten-query': 'param=value'
+//   }
+// }
+```
+
+---
+
+## extractRedirects
+
+Extracts redirect routes from routing phases and categorizes them by priority.
+
+### Signature
+
+```typescript
+function extractRedirects(routing: {
+  beforeMiddleware: AdapterRoute[];
+  beforeFiles: AdapterRoute[];
+}): {
+  priority: RouteWithSrc[];
+  normal: RouteWithSrc[];
+}
+```
+
+### Parameters
+
+<ParamField path="routing" type="object" required>
+  Routing configuration containing routes from multiple phases.
+  
+  <Expandable title="properties">
+    <ResponseField name="beforeMiddleware" type="AdapterRoute[]">
+      Routes processed before middleware
+    </ResponseField>
+    <ResponseField name="beforeFiles" type="AdapterRoute[]">
+      Routes processed before checking the filesystem
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Return value
+
+Returns an object with two arrays:
+
+<ResponseField name="priority" type="RouteWithSrc[]">
+  Redirects with `priority: true` flag. These have `continue: true` added.
+</ResponseField>
+
+<ResponseField name="normal" type="RouteWithSrc[]">
+  Standard redirects without priority flag.
+</ResponseField>
+
+### Notes
+
+Only processes routes with redirect status codes: 301, 302, 303, 307, 308.
+
+---
+
+## extractHeaders
+
+Extracts header routes from routing phases.
+
+### Signature
+
+```typescript
+function extractHeaders(routing: {
+  beforeMiddleware: AdapterRoute[];
+  beforeFiles: AdapterRoute[];
+}): RouteWithSrc[]
+```
+
+### Parameters
+
+<ParamField path="routing" type="object" required>
+  Routing configuration containing routes from multiple phases.
+</ParamField>
+
+### Return value
+
+Returns an array of header routes. Each route has:
+
+- `src`: Source regex pattern
+- `headers`: Headers to apply
+- `continue: true`: Continues to next route
+- `important: true`: Added if route has `priority` flag
+- `has`: Optional conditions
+- `missing`: Optional negative conditions
+
+### Notes
+
+- Skips routes that are redirects (have redirect status codes)
+- Skips routes that are rewrites (have destination property)
+
+---
+
+## normalizeNextDataRoutes
+
+Creates routes to normalize `_next/data` URLs for middleware data resolving.
+
+### Signature
+
+```typescript
+function normalizeNextDataRoutes(
+  config: NextConfig,
+  buildId: string,
+  shouldHandleMiddlewareDataResolving: boolean,
+  isOverride = false
+): RouteWithSrc[]
+```
+
+### Parameters
+
+<ParamField path="config" type="NextConfig" required>
+  Next.js configuration object.
+</ParamField>
+
+<ParamField path="buildId" type="string" required>
+  Current build identifier.
+</ParamField>
+
+<ParamField path="shouldHandleMiddlewareDataResolving" type="boolean" required>
+  Whether middleware data resolving should be handled. Returns empty array if false.
+</ParamField>
+
+<ParamField path="isOverride" type="boolean" default="false">
+  Whether to add `override: true` to routes.
+</ParamField>
+
+### Return value
+
+Returns an array of routes that:
+
+1. Add `x-nextjs-data` header if missing
+2. Strip `_next/data/{buildId}/` prefix from URLs
+3. Normalize `/index` routes to `/`
+
+---
+
+## denormalizeNextDataRoutes
+
+Creates routes to convert normalized URLs back to `_next/data` format for middleware.
+
+### Signature
+
+```typescript
+function denormalizeNextDataRoutes(
+  config: NextConfig,
+  buildId: string,
+  shouldHandleMiddlewareDataResolving: boolean,
+  isOverride = false
+): RouteWithSrc[]
+```
+
+### Parameters
+
+Same as `normalizeNextDataRoutes`.
+
+### Return value
+
+Returns an array of routes that convert URLs back to `_next/data` format when `x-nextjs-data` header is present.
+
+---
+
+## extractOnMatchRoutes
+
+Extracts routes for the "hit" handle phase that execute when a match is found.
+
+### Signature
+
+```typescript
+function extractOnMatchRoutes(routing: {
+  onMatch: AdapterRoute[];
+}): RouteWithSrc[]
+```
+
+### Parameters
+
+<ParamField path="routing" type="object" required>
+  Object containing onMatch routes.
+</ParamField>
+
+### Return value
+
+Returns an array of routes with:
+
+- `src`: Source regex
+- `dest`: Optional destination
+- `headers`: Optional headers
+- `has`/`missing`: Optional conditions
+- `continue: true`
+- `important: true`
+
+### Example
+
+```typescript
+const onMatchRoutes = extractOnMatchRoutes(routing);
+
+// Result:
+// [
+//   {
+//     src: '^/(.*)$',
+//     headers: { 'x-custom-header': 'value' },
+//     continue: true,
+//     important: true
+//   }
+// ]
+```

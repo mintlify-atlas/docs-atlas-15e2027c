@@ -1,0 +1,484 @@
+---
+title: Debugging
+description: Troubleshooting guide, common issues, debugging techniques, and known limitations
+---
+
+This guide helps you debug issues with the Next.js Vercel Adapter, understand common problems, and resolve deployment failures.
+
+## Common issues
+
+### Build output not generated
+
+**Symptom**: No `.next/output` directory created after build.
+
+**Causes**:
+1. Adapter not configured in `next.config.js`
+2. Build failed before adapter ran
+3. Wrong Next.js version (requires Next.js 15+)
+
+**Solution**:
+
+<CodeGroup>
+```javascript next.config.js
+const adapter = require('@next-community/adapter-vercel');
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  adapter,  // ← Ensure this is present
+  experimental: {
+    // Other config
+  }
+};
+
+module.exports = nextConfig;
+```
+</CodeGroup>
+
+<Note>
+Run `npm ls next` to verify you're using Next.js 15.0.0 or higher. The adapter requires the new adapter API introduced in Next.js 15.
+</Note>
+
+### Functions fail to deploy
+
+**Symptom**: Deployment succeeds but functions return errors at runtime.
+
+**Common causes**:
+
+<Accordion title="Missing dependencies in filePathMap">
+The function bundle doesn't include all required files.
+
+```bash
+# Check function configuration
+cat .next/output/functions/api/hello.func/.vc-config.json | jq '.filePathMap'
+```
+
+Verify all imports are included in the `filePathMap`. Missing entries indicate a bug in asset resolution.
+</Accordion>
+
+<Accordion title="Incorrect handler path">
+The `handler` field in `.vc-config.json` points to the wrong file.
+
+```json
+// Should be relative to repo root
+{
+  "handler": "packages/app/___next_launcher.cjs",  // ✓ Correct
+  "handler": "___next_launcher.cjs"                 // ✗ Wrong if in subdirectory
+}
+```
+
+The adapter calculates this in `outputs.ts:413-416` using `path.posix.relative(repoRoot, projectDir)`.
+</Accordion>
+
+<Accordion title="Wrong Node.js version">
+Function requires newer Node.js features than the runtime provides.
+
+Check `.vc-config.json` runtime field:
+```json
+{
+  "runtime": "nodejs20.x"  // ← Should match your needs
+}
+```
+
+Verify with:
+```bash
+node --version  # Your local version
+cat .next/output/functions/index.func/.vc-config.json | jq -r '.runtime'
+```
+</Accordion>
+
+### Middleware not executing
+
+**Symptom**: Middleware doesn't run on expected routes.
+
+**Debugging steps**:
+
+1. Check middleware routes were generated:
+   ```bash
+   cat .next/output/config.json | jq '.routes[] | select(.middlewarePath)'
+   ```
+
+2. Verify middleware function exists:
+   ```bash
+   ls -la .next/output/functions/middleware.func/
+   ```
+
+3. Check matcher configuration:
+   ```typescript
+   // middleware.ts
+   export const config = {
+     matcher: [
+       '/api/:path*',
+       '/((?!_next/static|_next/image|favicon.ico).*)',
+     ]
+   };
+   ```
+
+<Warning>
+Middleware routes have `override: true` and run early in the routing pipeline. If middleware doesn't execute, check that no earlier route with `continue: false` is matching the request.
+</Warning>
+
+### Prerender/ISR issues
+
+**Symptom**: Dynamic routes show stale data or 404 errors.
+
+**Check prerender config**:
+
+```bash
+cat .next/output/functions/posts/[slug].prerender-config.json
+```
+
+Expected structure:
+```json
+{
+  "expiration": 60,              // Revalidate interval
+  "staleExpiration": 86400,      // Stale-while-revalidate
+  "allowQuery": ["slug"],        // Required query params
+  "bypassToken": "...",          // For on-demand revalidation
+  "fallback": "./[slug].prerender-fallback.html"
+}
+```
+
+**Common problems**:
+
+<Accordion title="fallback: false routes returning 404">
+When using `fallback: false`, non-prerendered paths must return 404.
+
+The adapter tracks these in `prerenderFallbackFalseMap` (index.ts:142-169):
+
+```typescript
+if (prerender.parentFallbackMode === false) {
+  const parentPage = parentOutput.pathname;
+  prerenderFallbackFalseMap[parentPage] = [
+    ...existingPaths,
+    prerender.pathname
+  ];
+}
+```
+
+This map is embedded in the handler (node-handler.ts:226-239) to check if routes exist.
+</Accordion>
+
+<Accordion title="PPR fallback not working">
+Partial Prerendering requires special content-type headers.
+
+Check the fallback file:
+```bash
+file .next/output/functions/index.prerender-fallback.html
+```
+
+The file should start with postponed state followed by HTML. The initial headers should include:
+```json
+{
+  "content-type": "application/x-nextjs-pre-render; state-length=1234; origin=\"text/html; charset=utf-8\""
+}
+```
+
+Generated in `outputs.ts:561-565`.
+</Accordion>
+
+### i18n routing problems
+
+**Symptom**: Wrong locale rendered or locale not detected.
+
+**Debug locale routing**:
+
+```bash
+# Find i18n routes
+cat .next/output/config.json | jq '.routes[] | select(.locale)'
+```
+
+Expected output:
+```json
+{
+  "src": "/",
+  "locale": {
+    "redirect": {
+      "en": "/",
+      "fr": "/fr"
+    },
+    "cookie": "NEXT_LOCALE"
+  },
+  "continue": true
+}
+```
+
+**Common causes**:
+
+- `localeDetection: false` disables automatic locale detection
+- Missing `NEXT_LOCALE` cookie
+- Conflicting rewrite rules before locale handling
+
+### RSC/App Router issues
+
+**Symptom**: App Router pages don't load or show JSON instead of HTML.
+
+**Check RSC routes**:
+
+```bash
+cat .next/output/config.json | jq '.routes[] | select(.headers.vary)'
+```
+
+Should see routes with `vary` header:
+```json
+{
+  "src": "^/(.+?)(?:/)?$",
+  "dest": "/$1.rsc",
+  "has": [{
+    "type": "header",
+    "key": "Next-Router-State-Tree",
+    "value": "1"
+  }],
+  "headers": {
+    "vary": "RSC, Next-Router-State-Tree, Next-Router-Prefetch"
+  }
+}
+```
+
+**Debugging prefetch issues**:
+
+For PPR, check segment prefetch routes exist:
+```bash
+cat .next/output/config.json | jq '.routes[] | select(.dest | contains(".segments/"))'
+```
+
+These are generated when `shouldHandleSegmentPrefetches` is true (index.ts:211-224).
+
+## Environment debugging
+
+### Handler environment
+
+The Node.js handler receives configuration via string replacement (node-handler.ts:456-467):
+
+```javascript
+// In generated handler
+const relativeDistDir = ".next";  // Injected
+const prerenderFallbackFalseMap = { /* ... */ };  // Injected
+```
+
+If functions fail with "Cannot find module", this likely indicates wrong `relativeDistDir`.
+
+**Verify paths**:
+```bash
+grep "relativeDistDir" .next/output/functions/index.func/___next_launcher.cjs
+```
+
+### Edge runtime debugging
+
+Edge functions use a different handler format:
+
+```typescript
+// Generated in get-edge-function-source.ts
+export default function edgeFunction(request, context) {
+  // Generated code
+}
+```
+
+Check the generated source:
+```bash
+cat .next/output/functions/api/edge.func/index.js
+```
+
+Look for:
+- Proper imports of all dependencies
+- WASM assets referenced correctly
+- Environment variables properly injected
+
+## Performance debugging
+
+### Build time issues
+
+**Symptom**: Adapter takes a long time during build.
+
+The adapter uses concurrent operations with semaphores:
+
+```typescript
+// outputs.ts:293
+const fsSema = new Sema(16, { capacity: nodeOutputs.length });
+```
+
+With 16 concurrent operations, large applications with 100+ functions should complete in reasonable time.
+
+**Profile the build**:
+```bash
+time npm run build
+
+# Check function count
+find .next/output/functions -name "*.func" | wc -l
+```
+
+### Function size optimization
+
+**Symptom**: Functions are too large, hitting deployment limits.
+
+The adapter includes several optimization techniques:
+
+<Accordion title="Function deduplication via symlinks">
+Multiple ISR routes sharing the same source create symlinks instead of copies:
+
+```bash
+ls -la .next/output/functions/posts/
+# post-1.func -> [slug].func  (symlink)
+# post-2.func -> [slug].func  (symlink)
+```
+
+Generated in `outputs.ts:517-535`.
+</Accordion>
+
+<Accordion title="Deterministic manifests">
+The adapter strips non-deterministic fields from `routes-manifest.json`:
+
+```typescript
+// outputs.ts:251-266
+manifest.headers = [];
+manifest.onMatchHeaders = [];
+delete manifest.deploymentId;
+```
+
+This allows infrastructure-level deduplication of identical functions.
+</Accordion>
+
+<Accordion title="Shared asset references">
+All functions reference the same assets via `filePathMap` instead of copying:
+
+```json
+{
+  "filePathMap": {
+    "server/chunks/shared.js": "packages/app/.next/server/chunks/shared.js"
+  }
+}
+```
+
+The actual file is only stored once.
+</Accordion>
+
+## Known limitations
+
+### Workflow/step routes
+
+Generated workflow and step routes have special handling:
+
+```typescript
+// outputs.ts:181-236
+function isGeneratedStep(routeName: string) {
+  return (
+    routeName.includes('.well-known/workflow/v1/step') ||
+    routeName.includes('api/generated/steps')
+  );
+}
+```
+
+These routes read configuration from adjacent `config.json` files and may override adapter defaults.
+
+### Route manifest modifications
+
+The adapter modifies routing behavior compared to standard Next.js:
+
+<Warning>
+**Normalized data routes**: When middleware is present with Pages Router, `_next/data` URLs are normalized before routing and denormalized after. This can affect middleware logic that inspects URLs.
+
+See `normalizeNextDataRoutes()` and `denormalizeNextDataRoutes()` in routing.ts.
+</Warning>
+
+### File system limitations
+
+<Warning>
+**Symlink support**: The adapter creates symlinks for function deduplication. Some file systems or deployment tools may not preserve symlinks. If symlinks fail (outputs.ts:529-534), the adapter tolerates `EEXIST` errors but this may cause deployment issues.
+</Warning>
+
+## Debugging tools
+
+### Inspect configuration
+
+```bash
+# Pretty-print config
+cat .next/output/config.json | jq .
+
+# Search for specific patterns
+cat .next/output/config.json | jq '.routes[] | select(.src | test("pattern"))'
+
+# Find all functions
+find .next/output/functions -name ".vc-config.json" -exec jq -r '.handler' {} \;
+
+# Check file path maps
+find .next/output/functions -name ".vc-config.json" | while read f; do
+  echo "$f:"
+  jq -r '.filePathMap | keys[]' "$f"
+done
+```
+
+### Validate output structure
+
+```bash
+# Ensure required files exist
+test -f .next/output/config.json && echo "✓ Config exists"
+test -d .next/output/functions && echo "✓ Functions directory exists"
+test -d .next/output/static && echo "✓ Static directory exists"
+
+# Check for broken symlinks
+find .next/output/functions -type l -exec test ! -e {} \; -print
+
+# Verify function handlers exist
+find .next/output/functions -name ".vc-config.json" | while read config; do
+  handler=$(jq -r '.handler' "$config")
+  test -f ".next/output/functions/$handler" || echo "Missing: $handler"
+done
+```
+
+### Enable verbose logging
+
+The adapter doesn't include built-in debug logging, but you can add it:
+
+<CodeGroup>
+```typescript Custom adapter wrapper
+const baseAdapter = require('@next-community/adapter-vercel');
+
+module.exports = {
+  name: 'Vercel (Debug)',
+  async onBuildComplete(ctx) {
+    console.log('Adapter context:', JSON.stringify({
+      outputs: {
+        appPages: ctx.outputs.appPages.length,
+        pages: ctx.outputs.pages.length,
+        prerenders: ctx.outputs.prerenders.length,
+      },
+      config: ctx.config
+    }, null, 2));
+    
+    await baseAdapter.onBuildComplete(ctx);
+    
+    console.log('Build output generated at:', ctx.distDir + '/output');
+  }
+};
+```
+</CodeGroup>
+
+## Getting help
+
+If you encounter issues not covered here:
+
+1. **Check the changelog**: Review CHANGELOG.md for known issues and recent fixes
+2. **Inspect the output**: Use the debugging tools above to understand what was generated
+3. **Compare with working config**: Test with a minimal reproduction
+4. **Report issues**: Include the output structure and configuration when reporting bugs
+
+<Note>
+When reporting issues, include:
+- Next.js version (`npm ls next`)
+- Adapter version (`npm ls @next-community/adapter-vercel`)
+- Relevant `next.config.js` settings
+- Contents of `.next/output/config.json` (sanitized)
+- Error messages and stack traces
+</Note>
+
+## Changelog highlights
+
+Recent fixes from CHANGELOG.md:
+
+- **0.0.1-beta.12**: Fixed lambda typing and payloads field
+- **0.0.1-beta.10**: Fixed initURL including empty query
+- **0.0.1-beta.9**: Made sure initURL is absolute
+- **0.0.1-beta.8**: Ensured initURL is initialized
+- **0.0.1-beta.7**: Applied generated step/workflow config overrides
+- **0.0.1-beta.5**: Stripped routes-manifest.json for determinism
+
+These fixes address common deployment issues and improve compatibility.
