@@ -1,0 +1,93 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Next.js Vercel Adapter",
+  "projectDescription": "Official deployment adapter that enables Next.js applications to run optimally on Vercel's infrastructure.",
+  "theme": "palm",
+  "primaryColor": "#000000",
+  "lightColor": "#3b82f6",
+  "darkColor": "#60a5fa",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Overview",
+        "pages": [
+          "introduction",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Core Concepts",
+        "pages": [
+          "concepts/how-it-works",
+          "concepts/routing",
+          "concepts/edge-runtime",
+          "concepts/node-runtime"
+        ]
+      },
+      {
+        "group": "Configuration",
+        "pages": [
+          "configuration/installation",
+          "configuration/next-config",
+          "configuration/vercel-config"
+        ]
+      },
+      {
+        "group": "Features",
+        "pages": [
+          "features/middleware",
+          "features/static-generation",
+          "features/incremental-static-regeneration",
+          "features/app-router",
+          "features/pages-router",
+          "features/internationalization",
+          "features/image-optimization"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "api/adapter",
+          "api/routing-functions",
+          "api/output-handlers",
+          "api/types"
+        ]
+      },
+      {
+        "group": "Advanced",
+        "pages": [
+          "advanced/build-outputs",
+          "advanced/custom-routing",
+          "advanced/debugging"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automatic configuration when deploying on Vercel",
+    "Support for Edge and Node.js runtimes",
+    "Advanced routing with rewrites, redirects, and headers",
+    "Middleware integration for request interception",
+    "Static generation with ISR (Incremental Static Regeneration)",
+    "App Router and Pages Router support",
+    "Internationalization (i18n) routing",
+    "Image optimization configuration"
+  ],
+  "publicApiSurface": [
+    "NextAdapter (main adapter export)",
+    "onBuildComplete hook",
+    "handleEdgeOutputs",
+    "handleNodeOutputs",
+    "handleMiddleware",
+    "handlePrerenderOutputs",
+    "handleStaticOutputs",
+    "handlePublicFiles",
+    "normalizeRewrites",
+    "extractRedirects",
+    "extractHeaders",
+    "normalizeNextDataRoutes",
+    "denormalizeNextDataRoutes",
+    "VercelConfig type",
+    "ImagesConfig type"
+  ]
+}
